@@ -10,7 +10,8 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use super::cached_reader::CachedReader;
 use super::raw_reader::PbfReader;
 use super::traits::PbfRandomRead;
-use crate::models::{Element, ElementType, Node, Relation, Way};
+use crate::models::{BasicElement, Element, ElementType, Node, Relation, Way};
+use crate::readers::traits::BlobData;
 use crate::utils::file;
 
 fn get_index_path_from_pbf_path(pbf_path: &str) -> String {
@@ -248,19 +249,62 @@ impl IndexedReader<CachedReader> {
 }
 
 impl<T: PbfRandomRead> IndexedReader<T> {
-    /// Finds an node by its ID.
-    pub fn find_node(&mut self, node_id: i64) -> anyhow::Result<Option<Node>> {
-        let has_offset = self.pbf_index.get_offset(&ElementType::Node, node_id);
+    fn find_element<E, F>(
+        &mut self,
+        element_type: &ElementType,
+        element_id: i64,
+        get_vec: F,
+    ) -> anyhow::Result<Option<E>>
+    where
+        E: BasicElement,
+        F: FnOnce(&BlobData) -> &Vec<E>,
+    {
+        let has_offset = self.pbf_index.get_offset(element_type, element_id);
         if has_offset.is_none() {
             return Ok(None);
         }
         let offset = has_offset.unwrap();
         let blob_data = self.pbf_reader.read_blob_by_offset(offset)?;
-        let node = blob_data.nodes.iter().find(|node| node.id == node_id);
-        match node {
-            Some(n) => Ok(Some(n.clone())),
+        let elem = get_vec(&blob_data)
+            .iter()
+            .find(|e| e.get_id() == element_id);
+        match elem {
+            Some(e) => Ok(Some(e.clone())),
             None => Ok(None),
         }
+    }
+
+    fn find_elements<E, F>(
+        &mut self,
+        element_type: &ElementType,
+        element_ids: &[i64],
+        get_vec: F,
+    ) -> anyhow::Result<Vec<E>>
+    where
+        E: BasicElement,
+        F: Fn(&BlobData) -> &Vec<E>,
+    {
+        let offsets: HashSet<u64> = element_ids
+            .into_iter()
+            .filter_map(|id| self.pbf_index.get_offset(element_type, *id))
+            .collect();
+        let result: Vec<E> = offsets
+            .into_iter()
+            .flat_map(|offset| {
+                let blob_data = self.pbf_reader.read_blob_by_offset(offset).unwrap();
+                get_vec(&blob_data)
+                    .iter()
+                    .filter(|e| element_ids.contains(&e.get_id()))
+                    .cloned()
+                    .collect::<Vec<E>>()
+            })
+            .collect();
+        Ok(result)
+    }
+
+    /// Finds an node by its ID.
+    pub fn find_node(&mut self, node_id: i64) -> anyhow::Result<Option<Node>> {
+        self.find_element(&ElementType::Node, node_id, |blob_data| &blob_data.nodes)
     }
 
     /// Finds nodes by their IDs.
@@ -268,39 +312,12 @@ impl<T: PbfRandomRead> IndexedReader<T> {
     /// `find_nodes` is more efficient than calling `find_node` multiple times when you have a batch of node IDs.
     ///
     pub fn find_nodes(&mut self, node_ids: &[i64]) -> anyhow::Result<Vec<Node>> {
-        let offsets: HashSet<u64> = node_ids
-            .into_iter()
-            .filter_map(|id| self.pbf_index.get_offset(&ElementType::Node, *id))
-            .collect();
-        let result: Vec<Node> = offsets
-            .into_iter()
-            .flat_map(|offset| {
-                let blob_data = self.pbf_reader.read_blob_by_offset(offset).unwrap();
-                let nodes: Vec<Node> = blob_data
-                    .nodes
-                    .iter()
-                    .filter(|node| node_ids.contains(&node.id))
-                    .map(|node| node.clone())
-                    .collect();
-                nodes
-            })
-            .collect();
-        Ok(result)
+        self.find_elements(&ElementType::Node, node_ids, |blob_data| &blob_data.nodes)
     }
 
     /// Finds a way by its ID.
     pub fn find_way(&mut self, way_id: i64) -> anyhow::Result<Option<Way>> {
-        let has_offset = self.pbf_index.get_offset(&ElementType::Way, way_id);
-        if has_offset.is_none() {
-            return Ok(None);
-        }
-        let offset = has_offset.unwrap();
-        let blob_data = self.pbf_reader.read_blob_by_offset(offset)?;
-        let way = blob_data.ways.iter().find(|way| way.id == way_id);
-        match way {
-            Some(w) => Ok(Some(w.clone())),
-            None => Ok(None),
-        }
+        self.find_element(&ElementType::Way, way_id, |blob_data| &blob_data.ways)
     }
 
     /// Finds ways by their IDs.
@@ -308,44 +325,14 @@ impl<T: PbfRandomRead> IndexedReader<T> {
     /// `find_ways` is more efficient than calling `find_way` multiple times when you have a batch of way IDs.
     ///
     pub fn find_ways(&mut self, way_ids: &[i64]) -> anyhow::Result<Vec<Way>> {
-        let offsets: HashSet<u64> = way_ids
-            .into_iter()
-            .filter_map(|id| self.pbf_index.get_offset(&ElementType::Way, *id))
-            .collect();
-        let result: Vec<Way> = offsets
-            .into_iter()
-            .flat_map(|offset| {
-                let blob_data = self.pbf_reader.read_blob_by_offset(offset).unwrap();
-                let ways: Vec<Way> = blob_data
-                    .ways
-                    .iter()
-                    .filter(|way| way_ids.contains(&way.id))
-                    .map(|way| way.clone())
-                    .collect();
-                ways
-            })
-            .collect();
-        Ok(result)
+        self.find_elements(&ElementType::Way, way_ids, |blob_data| &blob_data.ways)
     }
 
     /// Finds a relation by its ID.
     pub fn find_relation(&mut self, relation_id: i64) -> anyhow::Result<Option<Relation>> {
-        let has_offset = self
-            .pbf_index
-            .get_offset(&ElementType::Relation, relation_id);
-        if has_offset.is_none() {
-            return Ok(None);
-        }
-        let offset = has_offset.unwrap();
-        let blob_data = self.pbf_reader.read_blob_by_offset(offset)?;
-        let rel = blob_data
-            .relations
-            .iter()
-            .find(|relation| relation.id == relation_id);
-        match rel {
-            Some(r) => Ok(Some(r.clone())),
-            None => Ok(None),
-        }
+        self.find_element(&ElementType::Relation, relation_id, |blob_data| {
+            &blob_data.relations
+        })
     }
 
     /// Finds relations by their IDs.
@@ -353,24 +340,9 @@ impl<T: PbfRandomRead> IndexedReader<T> {
     /// `find_relations` is more efficient than calling `find_relation` multiple times when you have a batch of relation IDs.
     ///
     pub fn find_relations(&mut self, relation_ids: &[i64]) -> anyhow::Result<Vec<Relation>> {
-        let offsets: HashSet<u64> = relation_ids
-            .into_iter()
-            .filter_map(|id| self.pbf_index.get_offset(&ElementType::Relation, *id))
-            .collect();
-        let result: Vec<Relation> = offsets
-            .into_iter()
-            .flat_map(|offset| {
-                let blob_data = self.pbf_reader.read_blob_by_offset(offset).unwrap();
-                let relations: Vec<Relation> = blob_data
-                    .relations
-                    .iter()
-                    .filter(|relation| relation_ids.contains(&relation.id))
-                    .map(|relation| relation.clone())
-                    .collect();
-                relations
-            })
-            .collect();
-        Ok(result)
+        self.find_elements(&ElementType::Relation, relation_ids, |blob_data| {
+            &blob_data.relations
+        })
     }
 
     /// Finds an element by its type and ID.
@@ -552,7 +524,7 @@ mod tests {
         if let Element::Node(node) = target {
             assert_eq!(node.id, 4254529698);
         } else {
-            assert!(false);
+            panic!("Expected Node element");
         }
 
         let target_op = indexed_reader.find(&ElementType::Way, 1055523837).unwrap();
@@ -560,8 +532,62 @@ mod tests {
         if let Element::Way(way) = target {
             assert_eq!(way.id, 1055523837);
         } else {
-            assert!(false);
+            panic!("Expected Way element");
         }
+    }
+
+    #[test]
+    fn test_find_nonexistent_element() {
+        let pbf_file = "./resources/andorra-latest.osm.pbf";
+        let mut indexed_reader = IndexedReader::from_path(pbf_file).unwrap();
+
+        // Test non-existent node
+        assert!(indexed_reader.find_node(-1).unwrap().is_none());
+
+        // Test non-existent way
+        assert!(indexed_reader.find_way(-1).unwrap().is_none());
+
+        // Test non-existent relation
+        assert!(indexed_reader.find_relation(-1).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_batch_operations() {
+        let pbf_file = "./resources/andorra-latest.osm.pbf";
+        let mut indexed_reader = IndexedReader::from_path(pbf_file).unwrap();
+
+        // Test find_nodes with mixed existing/non-existing IDs
+        let node_ids = vec![4254529698, 4254529699, -1]; // Last ID doesn't exist
+        let nodes = indexed_reader.find_nodes(&node_ids).unwrap();
+        assert_eq!(nodes.len(), 2);
+        assert!(nodes.iter().any(|n| n.id == 4254529698));
+        assert!(nodes.iter().any(|n| n.id == 4254529699));
+
+        // Test empty input
+        assert!(indexed_reader.find_nodes(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_dependency_resolution() {
+        let pbf_file = "./resources/andorra-latest.osm.pbf";
+        let mut indexed_reader = IndexedReader::from_path(pbf_file).unwrap();
+
+        // Test getting a way with its nodes
+        let way_with_deps = indexed_reader
+            .get_with_deps(&ElementType::Way, 1055523837)
+            .unwrap();
+        assert!(way_with_deps.len() > 1);
+        assert!(way_with_deps.iter().any(|e| matches!(e, Element::Way(_))));
+        assert!(way_with_deps.iter().any(|e| matches!(e, Element::Node(_))));
+    }
+
+    #[test]
+    fn test_invalid_file_handling() {
+        // Test with non-existent PBF file
+        assert!(PbfIndex::new("nonexistent.pbf").is_err());
+
+        // Test with invalid PIF file
+        assert!(PbfIndex::load_from_file("nonexistent.pif").is_err());
     }
 
     #[bench]
@@ -570,7 +596,6 @@ mod tests {
         let mut indexed_reader = IndexedReader::from_path(pbf_file).unwrap();
 
         b.iter(|| {
-            // Inner closure, the actual test
             for _ in 1..30 {
                 let target_op = indexed_reader.find(&ElementType::Node, 4254529698).unwrap();
                 target_op.unwrap();
@@ -584,11 +609,21 @@ mod tests {
         let mut indexed_reader = IndexedReader::from_path_with_cache(pbf_file, 10000).unwrap();
 
         b.iter(|| {
-            // Inner closure, the actual test
             for _ in 1..30 {
                 let target_op = indexed_reader.find(&ElementType::Node, 4254529698).unwrap();
                 target_op.unwrap();
             }
+        });
+    }
+
+    #[bench]
+    fn bench_batch_operations(b: &mut Bencher) {
+        let pbf_file = "./resources/andorra-latest.osm.pbf";
+        let mut indexed_reader = IndexedReader::from_path(pbf_file).unwrap();
+        let node_ids = vec![4254529698, 4254529699, 4254529700];
+
+        b.iter(|| {
+            indexed_reader.find_nodes(&node_ids).unwrap();
         });
     }
 }

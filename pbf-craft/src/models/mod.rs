@@ -199,7 +199,8 @@ pub struct RelationMember {
     pub role: String,
 }
 
-pub trait BasicElement {
+pub trait BasicElement: Clone {
+    fn get_element_type() -> ElementType;
     fn get_id(&self) -> i64;
     fn get_version(&self) -> i32;
     fn get_timestamp(&self) -> Option<DateTime<Utc>>;
@@ -210,6 +211,10 @@ pub trait BasicElement {
 }
 
 impl BasicElement for Node {
+    fn get_element_type() -> ElementType {
+        ElementType::Node
+    }
+
     fn get_id(&self) -> i64 {
         self.id
     }
@@ -240,6 +245,10 @@ impl BasicElement for Node {
 }
 
 impl BasicElement for Way {
+    fn get_element_type() -> ElementType {
+        ElementType::Way
+    }
+
     fn get_id(&self) -> i64 {
         self.id
     }
@@ -270,6 +279,10 @@ impl BasicElement for Way {
 }
 
 impl BasicElement for Relation {
+    fn get_element_type() -> ElementType {
+        ElementType::Relation
+    }
+
     fn get_id(&self) -> i64 {
         self.id
     }
