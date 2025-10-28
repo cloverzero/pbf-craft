@@ -55,23 +55,22 @@ impl<R: Read + Send> PbfReader<R> {
             let offset = self.blob_reader.offset;
             match self.blob_reader.next() {
                 Some(blob) => match blob.decode().expect("Failed to decode block.") {
-                    DecodedBlob::OsmHeader(_) => {
-                        return Some(BlobData {
-                            nodes: Vec::with_capacity(0),
-                            ways: Vec::with_capacity(0),
-                            relations: Vec::with_capacity(0),
-                            offset,
-                        })
-                    }
+                    DecodedBlob::OsmHeader(_) => Some(BlobData {
+                        nodes: Vec::with_capacity(0),
+                        ways: Vec::with_capacity(0),
+                        relations: Vec::with_capacity(0),
+                        offset,
+                    }),
                     DecodedBlob::OsmData(data) => {
                         let decorator = PrimitiveReader::new(data);
                         let (nodes, ways, relations) = decorator.get_all_elements();
-                        return Some(BlobData {
+
+                        Some(BlobData {
                             nodes,
                             ways,
                             relations,
                             offset,
-                        });
+                        })
                     }
                 },
                 None => None,
@@ -186,19 +185,19 @@ impl<R: Read + Send> PbfReader<R> {
                         ElementType::Node => p
                             .get_nodes()
                             .into_iter()
-                            .map(|i| Element::Node(i))
+                            .map(Element::Node)
                             .filter(&callback)
                             .collect::<Vec<Element>>(),
                         ElementType::Way => p
                             .get_ways()
                             .into_iter()
-                            .map(|i| Element::Way(i))
+                            .map(Element::Way)
                             .filter(&callback)
                             .collect::<Vec<Element>>(),
                         ElementType::Relation => p
                             .get_relations()
                             .into_iter()
-                            .map(|i| Element::Relation(i))
+                            .map(Element::Relation)
                             .filter(&callback)
                             .collect::<Vec<Element>>(),
                     };
@@ -207,17 +206,17 @@ impl<R: Read + Send> PbfReader<R> {
                     let (nodes, ways, relations) = p.get_all_elements();
                     let mut filterd_nodes: Vec<Element> = nodes
                         .into_iter()
-                        .map(|i| Element::Node(i))
+                        .map(Element::Node)
                         .filter(&callback)
                         .collect();
                     let mut filterd_ways: Vec<Element> = ways
                         .into_iter()
-                        .map(|i| Element::Way(i))
+                        .map(Element::Way)
                         .filter(&callback)
                         .collect();
                     let mut filterd_relations: Vec<Element> = relations
                         .into_iter()
-                        .map(|i| Element::Relation(i))
+                        .map(Element::Relation)
                         .filter(&callback)
                         .collect();
 
@@ -226,13 +225,10 @@ impl<R: Read + Send> PbfReader<R> {
                     Some(filterd_nodes)
                 }
             })
-            .reduce(
-                || Vec::new(),
-                |mut a, mut b| {
-                    a.append(&mut b);
-                    a
-                },
-            );
+            .reduce(Vec::new, |mut a, mut b| {
+                a.append(&mut b);
+                a
+            });
 
         Ok(result)
     }

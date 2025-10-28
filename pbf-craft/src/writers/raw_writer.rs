@@ -148,7 +148,7 @@ impl<W: Write> PbfWriter<W> {
             self.write_header()?;
         }
         let block_builder = PrimitiveBuilder::new();
-        let cache = mem::replace(&mut self.cache, Vec::new());
+        let cache = mem::take(&mut self.cache);
         let block = block_builder.build(cache, self.use_dense);
 
         let blob = self.build_raw_blob(block.write_to_bytes()?)?;

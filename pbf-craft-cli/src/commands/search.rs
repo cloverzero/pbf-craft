@@ -52,15 +52,13 @@ impl SearchCommand {
             }
             let element_type = element_type_result.unwrap();
 
-            if self.exact.is_none() || self.exact.unwrap() == true {
+            if self.exact.is_none() || self.exact.unwrap() {
                 let mut indexed_reader =
                     IndexedReader::from_path(&self.file).expect("Indexed reader loading failed");
                 let find_result = indexed_reader.find(&element_type, *elid).unwrap();
                 match find_result {
                     Some(ec) => {
-                        let mut list = Vec::new();
-                        list.push(ec);
-                        list
+                        vec![ec]
                     }
                     None => Vec::with_capacity(0),
                 }
@@ -75,7 +73,8 @@ impl SearchCommand {
                                     return true;
                                 }
                             }
-                            return false;
+
+                            false
                         }
                         (Element::Way(way), ElementType::Way) => way.id == *elid,
                         (Element::Relation(relation), ElementType::Relation) => {
@@ -88,7 +87,8 @@ impl SearchCommand {
                                     return true;
                                 }
                             }
-                            return false;
+
+                            false
                         }
                         _ => false,
                     })
@@ -133,7 +133,8 @@ impl SearchCommand {
                         return way.way_nodes.iter().any(|ref_node| ref_node.id == first)
                             && way.way_nodes.iter().any(|ref_node| ref_node.id == second);
                     }
-                    return false;
+
+                    false
                 })
                 .expect("node pair error")
         } else {

@@ -1,7 +1,6 @@
 use std::fs::File;
 
 use clap::Args;
-use csv;
 use serde::{Deserialize, Serialize};
 
 use pbf_craft::models::{Element, ElementType};
@@ -42,11 +41,9 @@ impl DiffCommand {
             csv::WriterBuilder::new().from_writer(File::create(&self.output).unwrap());
 
         let mut source = IterableReader::from_path(&self.source)
-            .expect(&format!("No such file: {}", self.source))
-            .into_iter();
+            .unwrap_or_else(|_| panic!("No such file: {}", self.source));
         let mut target = IterableReader::from_path(&self.target)
-            .expect(&format!("No such file: {}", self.target))
-            .into_iter();
+            .unwrap_or_else(|_| panic!("No such file: {}", self.target));
 
         let mut source_element_cnt = source.next();
         let mut target_element_cnt = target.next();

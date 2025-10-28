@@ -17,7 +17,8 @@ fn get_index_path_from_pbf_path(pbf_path: &str) -> String {
     let mut index_path = pbf_path.to_owned();
     let last_dot_index = index_path.rfind('.').unwrap();
     index_path.replace_range(last_dot_index..pbf_path.len(), ".pif");
-    return index_path;
+
+    index_path
 }
 
 struct PbfIndex {
@@ -97,15 +98,15 @@ impl PbfIndex {
 
         let mut reader = PbfReader::from_path(pbf_file_path)?;
         while let Some(blob_data) = reader.read_next_blob() {
-            if blob_data.nodes.len() > 0 {
+            if !blob_data.nodes.is_empty() {
                 let last = blob_data.nodes.last().unwrap();
                 node_index.insert(last.id, blob_data.offset);
             }
-            if blob_data.ways.len() > 0 {
+            if !blob_data.ways.is_empty() {
                 let last = blob_data.ways.last().unwrap();
                 way_index.insert(last.id, blob_data.offset);
             }
-            if blob_data.relations.len() > 0 {
+            if !blob_data.relations.is_empty() {
                 let last = blob_data.relations.last().unwrap();
                 relation_index.insert(last.id, blob_data.offset);
             }
@@ -278,9 +279,9 @@ impl<T: PbfRandomRead> IndexedReader<T> {
         E: BasicElement,
         F: Fn(&BlobData) -> &Vec<E>,
     {
-        let id_sets: HashSet<i64> = element_ids.iter().map(|id| *id).collect();
+        let id_sets: HashSet<i64> = element_ids.iter().copied().collect();
         let offsets: HashSet<u64> = element_ids
-            .into_iter()
+            .iter()
             .filter_map(|id| self.pbf_index.get_offset(element_type, *id))
             .collect();
         let result: Vec<E> = offsets
@@ -414,7 +415,7 @@ impl<T: PbfRandomRead> IndexedReader<T> {
         let nodes = self.find_nodes(&node_ids)?;
 
         let mut result: Vec<Element> = vec![Element::Way(way)];
-        result.extend(nodes.into_iter().map(|node| Element::Node(node)));
+        result.extend(nodes.into_iter().map(Element::Node));
         Ok(result)
     }
 

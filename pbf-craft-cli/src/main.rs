@@ -1,7 +1,6 @@
 mod commands;
 mod db;
 
-use env_logger;
 use std::time::Instant;
 
 use clap::Parser;

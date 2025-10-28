@@ -325,6 +325,5 @@ mod tests {
             builder.block.get_granularity(),
             builder.block.get_date_granularity()
         );
-        assert!(true);
     }
 }
