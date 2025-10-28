@@ -28,7 +28,7 @@ impl StringTableBuilder {
         id as i32
     }
 
-    pub fn to_string_table(self) -> osmformat::StringTable {
+    pub fn into_string_table(self) -> osmformat::StringTable {
         let string_bytes: Vec<Vec<u8>> = self
             .strings
             .into_iter()
@@ -297,18 +297,18 @@ impl PrimitiveBuilder {
                 Element::Relation(relation) => relations.push(relation),
             }
         }
-        if nodes.len() > 0 {
+        if !nodes.is_empty() {
             self.add_nodes(nodes, use_dense);
         }
-        if ways.len() > 0 {
+        if !ways.is_empty() {
             self.add_ways(ways);
         }
-        if relations.len() > 0 {
+        if !relations.is_empty() {
             self.add_relations(relations);
         }
 
         self.block
-            .set_stringtable(self.string_table.to_string_table());
+            .set_stringtable(self.string_table.into_string_table());
         self.block
     }
 }

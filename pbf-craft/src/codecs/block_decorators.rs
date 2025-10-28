@@ -25,7 +25,7 @@ impl HeaderReader {
                 unsupported.push(feature.to_owned());
             }
         }
-        if unsupported.len() > 0 {
+        if !unsupported.is_empty() {
             panic!(
                 "PBF file contains unsupported features: {}",
                 unsupported.join(", ")
@@ -155,11 +155,11 @@ impl PrimitiveReader {
 
     fn process_dense(&self, dense: &osmformat::DenseNodes) -> Vec<Node> {
         let mut dense_info_iter = DenseInfoIterator::new(dense.get_denseinfo());
-        let mut id_iter = dense.get_id().into_iter();
-        let mut lat_iter = dense.get_lat().into_iter();
-        let mut lon_iter = dense.get_lon().into_iter();
+        let mut id_iter = dense.get_id().iter();
+        let mut lat_iter = dense.get_lat().iter();
+        let mut lon_iter = dense.get_lon().iter();
 
-        let mut kv_iter = dense.get_keys_vals().into_iter();
+        let mut kv_iter = dense.get_keys_vals().iter();
 
         let mut result = Vec::with_capacity(dense.id.len());
         let mut node_id: i64 = 0;
@@ -233,8 +233,8 @@ impl PrimitiveReader {
     }
 
     fn process_tags(&self, keys: &[u32], vals: &[u32]) -> Vec<Tag> {
-        let mut key_iter = keys.into_iter();
-        let mut val_iter = vals.into_iter();
+        let mut key_iter = keys.iter();
+        let mut val_iter = vals.iter();
         let mut tags: Vec<Tag> = Vec::new();
         loop {
             match (key_iter.next(), val_iter.next()) {
@@ -252,7 +252,7 @@ impl PrimitiveReader {
 
     fn process_nodes(&self, nodes: &[osmformat::Node]) -> Vec<Node> {
         nodes
-            .into_iter()
+            .iter()
             .map(|elm| {
                 let tags = self.process_tags(elm.get_keys(), elm.get_vals());
                 let base_el = if elm.has_info() {
@@ -270,7 +270,7 @@ impl PrimitiveReader {
     }
 
     fn process_ways(&self, ways: &[osmformat::Way]) -> Vec<Way> {
-        ways.into_iter()
+        ways.iter()
             .map(|elm| {
                 let tags = self.process_tags(elm.get_keys(), elm.get_vals());
                 let base_el = if elm.has_info() {
@@ -284,9 +284,9 @@ impl PrimitiveReader {
                 let mut node_id: i64 = 0;
                 let mut lat: i64 = 0;
                 let mut lon: i64 = 0;
-                let mut ref_iter = elm.get_refs().into_iter();
-                let mut lat_iter = elm.get_lat().into_iter();
-                let mut lon_iter = elm.get_lon().into_iter();
+                let mut ref_iter = elm.get_refs().iter();
+                let mut lat_iter = elm.get_lat().iter();
+                let mut lon_iter = elm.get_lon().iter();
                 loop {
                     match (ref_iter.next(), lat_iter.next(), lon_iter.next()) {
                         (Some(&ref_delta), Some(&lat_delta), Some(&lon_delta)) => {
@@ -315,7 +315,7 @@ impl PrimitiveReader {
 
     fn process_relations(&self, relations: &[osmformat::Relation]) -> Vec<Relation> {
         relations
-            .into_iter()
+            .iter()
             .map(|elm| {
                 let tags = self.process_tags(elm.get_keys(), elm.get_vals());
                 let base_el = if elm.has_info() {
@@ -341,9 +341,9 @@ impl PrimitiveReader {
         member_types: &[Relation_MemberType],
         member_roles: &[i32],
     ) -> Vec<RelationMember> {
-        let mut mid_iter = member_ids.into_iter();
-        let mut role_iter = member_roles.into_iter();
-        let mut type_iter = member_types.into_iter();
+        let mut mid_iter = member_ids.iter();
+        let mut role_iter = member_roles.iter();
+        let mut type_iter = member_types.iter();
 
         let mut result: Vec<RelationMember> = Vec::new();
         let mut member_id: i64 = 0;
