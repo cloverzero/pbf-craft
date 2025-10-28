@@ -68,7 +68,7 @@ impl<W: Write> PbfWriter<W> {
     /// # Parameters
     ///
     /// * `writer` - The writer to use for writing the PBF data. It should implement the `Write`
-    ///              trait, which is used to write the PBF data
+    ///   trait, which is used to write the PBF data.
     /// * `use_dense` - A boolean value indicating whether to use dense format for writing nodes.
     ///
     pub fn new(writer: W, use_dense: bool) -> PbfWriter<W> {

@@ -55,6 +55,9 @@ mod utils;
 pub mod writers;
 
 mod proto {
+    #![allow(renamed_and_removed_lints)]
+    #![allow(mismatched_lifetime_syntaxes)]
+    #![allow(clippy::all)]
     include!(concat!(env!("OUT_DIR"), "/mod.rs"));
 }
 

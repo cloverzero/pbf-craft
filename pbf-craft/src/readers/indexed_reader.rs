@@ -170,8 +170,8 @@ impl PbfIndex {
 ///
 /// # Type Parameters
 ///
-/// * `T` - A type that implements the `PbfRandomRead` trait, providing methods for random access
-///         reading of PBF data.
+/// * `T` - A type that implements the `PbfRandomRead` trait and provides random access reading of
+///   PBF data.
 ///
 /// # Fields
 ///
@@ -225,9 +225,9 @@ impl IndexedReader<CachedReader> {
     /// # Parameters
     ///
     /// * pbf_file - A path to the PBF file.
-    /// * cache_capacity - The capacity of the cache. The cache is used to store the parsed Blob from the PBF file.
-    ///                    By default, a Blob contains about 8000 elements. Please decide the appropriate capacity
-    ///                    according to your memory size.
+    /// * cache_capacity - The capacity of the cache. The cache stores the parsed Blob from the PBF
+    ///   file. A Blob contains about 8000 elements on average, so choose a capacity that fits your
+    ///   available memory.
     ///
     pub fn from_path_with_cache(
         pbf_file: &str,

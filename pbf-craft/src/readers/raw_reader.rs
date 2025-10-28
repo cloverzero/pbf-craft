@@ -137,9 +137,9 @@ impl<R: Read + Send> PbfReader<R> {
     /// # Arguments
     ///
     /// * `inclination` - An optional reference to an `ElementType` that specifies the type of elements to find.
-    ///                   If `None`, all element types are considered.
+    ///   If `None`, all element types are considered.
     /// * `callback` - A closure that takes a reference to an `Element` and returns a boolean indicating
-    ///                whether the element should be included in the result. The closure must be `Send` and `Sync`.
+    ///   whether the element should be included in the result. The closure must be `Send` and `Sync`.
     ///
     /// # Returns
     ///
