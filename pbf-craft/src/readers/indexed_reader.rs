@@ -278,6 +278,7 @@ impl<T: PbfRandomRead> IndexedReader<T> {
         E: BasicElement,
         F: Fn(&BlobData) -> &Vec<E>,
     {
+        let id_sets: HashSet<i64> = element_ids.iter().map(|id| *id).collect();
         let offsets: HashSet<u64> = element_ids
             .into_iter()
             .filter_map(|id| self.pbf_index.get_offset(element_type, *id))
@@ -291,7 +292,7 @@ impl<T: PbfRandomRead> IndexedReader<T> {
                     .expect("Failed to read blob by offset");
                 get_vec(&blob_data)
                     .iter()
-                    .filter(|e| element_ids.contains(&e.get_id()))
+                    .filter(|e| id_sets.contains(&e.get_id()))
                     .cloned()
                     .collect::<Vec<E>>()
             })
