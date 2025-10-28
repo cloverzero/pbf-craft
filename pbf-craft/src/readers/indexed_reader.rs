@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
-use std::ops::Bound;
 use std::str;
 
 use anyhow;
@@ -122,17 +121,12 @@ impl PbfIndex {
     }
 
     pub fn get_offset(&self, element_type: &ElementType, element_id: i64) -> Option<u64> {
-        let cursor = match element_type {
-            ElementType::Node => self.node_index.lower_bound(Bound::Included(&element_id)),
-            ElementType::Way => self.way_index.lower_bound(Bound::Included(&element_id)),
-            ElementType::Relation => self
-                .relation_index
-                .lower_bound(Bound::Included(&element_id)),
+        let mut range = match element_type {
+            ElementType::Node => self.node_index.range(element_id..),
+            ElementType::Way => self.way_index.range(element_id..),
+            ElementType::Relation => self.relation_index.range(element_id..),
         };
-        match cursor.peek_next() {
-            Some((_, offset)) => Some(*offset),
-            None => None,
-        }
+        range.next().map(|(_, offset)| *offset)
     }
 
     fn persist(&self, index_path: &str, checksum: &str) -> anyhow::Result<()> {
@@ -291,7 +285,10 @@ impl<T: PbfRandomRead> IndexedReader<T> {
         let result: Vec<E> = offsets
             .into_iter()
             .flat_map(|offset| {
-                let blob_data = self.pbf_reader.read_blob_by_offset(offset).unwrap();
+                let blob_data = self
+                    .pbf_reader
+                    .read_blob_by_offset(offset)
+                    .expect("Failed to read blob by offset");
                 get_vec(&blob_data)
                     .iter()
                     .filter(|e| element_ids.contains(&e.get_id()))
@@ -490,7 +487,6 @@ impl<T: PbfRandomRead> IndexedReader<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use test::{black_box, Bencher};
 
     #[test]
     fn test_index_from_pbf_file() {
@@ -590,40 +586,40 @@ mod tests {
         assert!(PbfIndex::load_from_file("nonexistent.pif").is_err());
     }
 
-    #[bench]
-    fn bench_find_without_cache(b: &mut Bencher) {
-        let pbf_file = "./resources/andorra-latest.osm.pbf";
-        let mut indexed_reader = IndexedReader::from_path(pbf_file).unwrap();
+    // #[bench]
+    // fn bench_find_without_cache(b: &mut Bencher) {
+    //     let pbf_file = "./resources/andorra-latest.osm.pbf";
+    //     let mut indexed_reader = IndexedReader::from_path(pbf_file).unwrap();
 
-        b.iter(|| {
-            for _ in 1..30 {
-                let target_op = indexed_reader.find(&ElementType::Node, 4254529698).unwrap();
-                target_op.unwrap();
-            }
-        });
-    }
+    //     b.iter(|| {
+    //         for _ in 1..30 {
+    //             let target_op = indexed_reader.find(&ElementType::Node, 4254529698).unwrap();
+    //             target_op.unwrap();
+    //         }
+    //     });
+    // }
 
-    #[bench]
-    fn bench_find_with_cache(b: &mut Bencher) {
-        let pbf_file = "./resources/andorra-latest.osm.pbf";
-        let mut indexed_reader = IndexedReader::from_path_with_cache(pbf_file, 10000).unwrap();
+    // #[bench]
+    // fn bench_find_with_cache(b: &mut Bencher) {
+    //     let pbf_file = "./resources/andorra-latest.osm.pbf";
+    //     let mut indexed_reader = IndexedReader::from_path_with_cache(pbf_file, 10000).unwrap();
 
-        b.iter(|| {
-            for _ in 1..30 {
-                let target_op = indexed_reader.find(&ElementType::Node, 4254529698).unwrap();
-                target_op.unwrap();
-            }
-        });
-    }
+    //     b.iter(|| {
+    //         for _ in 1..30 {
+    //             let target_op = indexed_reader.find(&ElementType::Node, 4254529698).unwrap();
+    //             target_op.unwrap();
+    //         }
+    //     });
+    // }
 
-    #[bench]
-    fn bench_batch_operations(b: &mut Bencher) {
-        let pbf_file = "./resources/andorra-latest.osm.pbf";
-        let mut indexed_reader = IndexedReader::from_path(pbf_file).unwrap();
-        let node_ids = vec![4254529698, 4254529699, 4254529700];
+    // #[bench]
+    // fn bench_batch_operations(b: &mut Bencher) {
+    //     let pbf_file = "./resources/andorra-latest.osm.pbf";
+    //     let mut indexed_reader = IndexedReader::from_path(pbf_file).unwrap();
+    //     let node_ids = vec![4254529698, 4254529699, 4254529700];
 
-        b.iter(|| {
-            indexed_reader.find_nodes(&node_ids).unwrap();
-        });
-    }
+    //     b.iter(|| {
+    //         indexed_reader.find_nodes(&node_ids).unwrap();
+    //     });
+    // }
 }

@@ -6,9 +6,6 @@ It contains a variety of PBF readers for a variety of scenarios. For example, a 
 reader with an index can locate and read elements more efficiently. It also provides
 a PBF writer that can write PBF data to a file.
 
-Since this crate uses the btree_cursors feature, it requires you to use the **nightly**
-version of rust.
-
 - Written in pure Rust
 - Provides an indexing feature to the PBF to greatly improve read performance.
 
