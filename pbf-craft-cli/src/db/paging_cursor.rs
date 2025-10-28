@@ -1,4 +1,3 @@
-use std::mem;
 use std::vec::IntoIter;
 
 use postgres::{Client, Portal, Row, Transaction};
@@ -29,21 +28,21 @@ impl<'client> PagingCursor<'client> {
     pub fn new(sql: &str, client: &'client mut Client) -> PagingCursor<'client> {
         let mut transaction = client.transaction().unwrap();
         let portal = transaction.bind(sql, &[]).unwrap();
-        let cursor = Self {
+
+        Self {
             transaction: Some(transaction),
             portal,
             limit: 32000,
             eof: false,
             cache: Vec::with_capacity(0).into_iter(),
-        };
-        return cursor;
+        }
     }
 
     fn fetch_next(&mut self) -> anyhow::Result<Vec<Row>> {
         if let Some(trans) = &mut self.transaction {
             let rows = trans.query_portal(&self.portal, self.limit as i32)?;
             if rows.len() < self.limit {
-                let trans = mem::replace(&mut self.transaction, None);
+                let trans = self.transaction.take();
                 trans.unwrap().commit()?;
                 self.eof = true;
             }

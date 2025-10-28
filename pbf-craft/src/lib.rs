@@ -4,9 +4,6 @@
 //! reader with an index can locate and read elements more efficiently. It also provides
 //! a PBF writer that can write PBF data to a file.
 //!
-//! Since this crate uses the btree_cursors feature, it requires you to use the **nightly**
-//! version of rust.
-//!
 //! # Example
 //!
 //! Read PBF data from a file:
@@ -48,11 +45,6 @@
 //! ```
 //!
 
-#![feature(btree_cursors)]
-#![feature(test)]
-
-extern crate test;
-
 mod codecs;
 /// Contains models for elements of OpenStreetMap data.
 pub mod models;
@@ -63,6 +55,9 @@ mod utils;
 pub mod writers;
 
 mod proto {
+    #![allow(renamed_and_removed_lints)]
+    #![allow(mismatched_lifetime_syntaxes)]
+    #![allow(clippy::all)]
     include!(concat!(env!("OUT_DIR"), "/mod.rs"));
 }
 

@@ -11,7 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     protobuf_codegen_pure::Codegen::new()
         .out_dir(&out_dir)
-        .inputs(&proto_files)
+        .inputs(proto_files)
         .include("src/proto")
         .run()?;
 

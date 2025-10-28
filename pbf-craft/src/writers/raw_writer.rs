@@ -68,7 +68,7 @@ impl<W: Write> PbfWriter<W> {
     /// # Parameters
     ///
     /// * `writer` - The writer to use for writing the PBF data. It should implement the `Write`
-    ///              trait, which is used to write the PBF data
+    ///   trait, which is used to write the PBF data.
     /// * `use_dense` - A boolean value indicating whether to use dense format for writing nodes.
     ///
     pub fn new(writer: W, use_dense: bool) -> PbfWriter<W> {
@@ -148,7 +148,7 @@ impl<W: Write> PbfWriter<W> {
             self.write_header()?;
         }
         let block_builder = PrimitiveBuilder::new();
-        let cache = mem::replace(&mut self.cache, Vec::new());
+        let cache = mem::take(&mut self.cache);
         let block = block_builder.build(cache, self.use_dense);
 
         let blob = self.build_raw_blob(block.write_to_bytes()?)?;

@@ -26,7 +26,7 @@ impl FieldCodec {
             Vec::with_capacity(0)
         } else {
             bytes_array
-                .into_iter()
+                .iter()
                 .map(|bytes| match String::from_utf8(bytes.clone()) {
                     Ok(str) => str,
                     Err(err) => {
@@ -67,7 +67,7 @@ impl FieldCodec {
 
     pub fn decode_timestamp(&self, raw_timestamp: i64) -> DateTime<Utc> {
         let timestamp = self.date_granularity as i64 * raw_timestamp;
-        return DateTime::from_timestamp_millis(timestamp).expect("invalid timestamp");
+        DateTime::from_timestamp_millis(timestamp).expect("invalid timestamp")
     }
 
     pub fn decode_string(&self, string_id: usize) -> String {

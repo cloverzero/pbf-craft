@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
-use std::ops::Bound;
 use std::str;
 
 use anyhow;
@@ -18,7 +17,8 @@ fn get_index_path_from_pbf_path(pbf_path: &str) -> String {
     let mut index_path = pbf_path.to_owned();
     let last_dot_index = index_path.rfind('.').unwrap();
     index_path.replace_range(last_dot_index..pbf_path.len(), ".pif");
-    return index_path;
+
+    index_path
 }
 
 struct PbfIndex {
@@ -98,15 +98,15 @@ impl PbfIndex {
 
         let mut reader = PbfReader::from_path(pbf_file_path)?;
         while let Some(blob_data) = reader.read_next_blob() {
-            if blob_data.nodes.len() > 0 {
+            if !blob_data.nodes.is_empty() {
                 let last = blob_data.nodes.last().unwrap();
                 node_index.insert(last.id, blob_data.offset);
             }
-            if blob_data.ways.len() > 0 {
+            if !blob_data.ways.is_empty() {
                 let last = blob_data.ways.last().unwrap();
                 way_index.insert(last.id, blob_data.offset);
             }
-            if blob_data.relations.len() > 0 {
+            if !blob_data.relations.is_empty() {
                 let last = blob_data.relations.last().unwrap();
                 relation_index.insert(last.id, blob_data.offset);
             }
@@ -122,17 +122,12 @@ impl PbfIndex {
     }
 
     pub fn get_offset(&self, element_type: &ElementType, element_id: i64) -> Option<u64> {
-        let cursor = match element_type {
-            ElementType::Node => self.node_index.lower_bound(Bound::Included(&element_id)),
-            ElementType::Way => self.way_index.lower_bound(Bound::Included(&element_id)),
-            ElementType::Relation => self
-                .relation_index
-                .lower_bound(Bound::Included(&element_id)),
+        let mut range = match element_type {
+            ElementType::Node => self.node_index.range(element_id..),
+            ElementType::Way => self.way_index.range(element_id..),
+            ElementType::Relation => self.relation_index.range(element_id..),
         };
-        match cursor.peek_next() {
-            Some((_, offset)) => Some(*offset),
-            None => None,
-        }
+        range.next().map(|(_, offset)| *offset)
     }
 
     fn persist(&self, index_path: &str, checksum: &str) -> anyhow::Result<()> {
@@ -175,8 +170,8 @@ impl PbfIndex {
 ///
 /// # Type Parameters
 ///
-/// * `T` - A type that implements the `PbfRandomRead` trait, providing methods for random access
-///         reading of PBF data.
+/// * `T` - A type that implements the `PbfRandomRead` trait and provides random access reading of
+///   PBF data.
 ///
 /// # Fields
 ///
@@ -230,9 +225,9 @@ impl IndexedReader<CachedReader> {
     /// # Parameters
     ///
     /// * pbf_file - A path to the PBF file.
-    /// * cache_capacity - The capacity of the cache. The cache is used to store the parsed Blob from the PBF file.
-    ///                    By default, a Blob contains about 8000 elements. Please decide the appropriate capacity
-    ///                    according to your memory size.
+    /// * cache_capacity - The capacity of the cache. The cache stores the parsed Blob from the PBF
+    ///   file. A Blob contains about 8000 elements on average, so choose a capacity that fits your
+    ///   available memory.
     ///
     pub fn from_path_with_cache(
         pbf_file: &str,
@@ -284,17 +279,21 @@ impl<T: PbfRandomRead> IndexedReader<T> {
         E: BasicElement,
         F: Fn(&BlobData) -> &Vec<E>,
     {
+        let id_sets: HashSet<i64> = element_ids.iter().copied().collect();
         let offsets: HashSet<u64> = element_ids
-            .into_iter()
+            .iter()
             .filter_map(|id| self.pbf_index.get_offset(element_type, *id))
             .collect();
         let result: Vec<E> = offsets
             .into_iter()
             .flat_map(|offset| {
-                let blob_data = self.pbf_reader.read_blob_by_offset(offset).unwrap();
+                let blob_data = self
+                    .pbf_reader
+                    .read_blob_by_offset(offset)
+                    .expect("Failed to read blob by offset");
                 get_vec(&blob_data)
                     .iter()
-                    .filter(|e| element_ids.contains(&e.get_id()))
+                    .filter(|e| id_sets.contains(&e.get_id()))
                     .cloned()
                     .collect::<Vec<E>>()
             })
@@ -416,7 +415,7 @@ impl<T: PbfRandomRead> IndexedReader<T> {
         let nodes = self.find_nodes(&node_ids)?;
 
         let mut result: Vec<Element> = vec![Element::Way(way)];
-        result.extend(nodes.into_iter().map(|node| Element::Node(node)));
+        result.extend(nodes.into_iter().map(Element::Node));
         Ok(result)
     }
 
@@ -490,7 +489,6 @@ impl<T: PbfRandomRead> IndexedReader<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use test::{black_box, Bencher};
 
     #[test]
     fn test_index_from_pbf_file() {
@@ -590,40 +588,40 @@ mod tests {
         assert!(PbfIndex::load_from_file("nonexistent.pif").is_err());
     }
 
-    #[bench]
-    fn bench_find_without_cache(b: &mut Bencher) {
-        let pbf_file = "./resources/andorra-latest.osm.pbf";
-        let mut indexed_reader = IndexedReader::from_path(pbf_file).unwrap();
+    // #[bench]
+    // fn bench_find_without_cache(b: &mut Bencher) {
+    //     let pbf_file = "./resources/andorra-latest.osm.pbf";
+    //     let mut indexed_reader = IndexedReader::from_path(pbf_file).unwrap();
 
-        b.iter(|| {
-            for _ in 1..30 {
-                let target_op = indexed_reader.find(&ElementType::Node, 4254529698).unwrap();
-                target_op.unwrap();
-            }
-        });
-    }
+    //     b.iter(|| {
+    //         for _ in 1..30 {
+    //             let target_op = indexed_reader.find(&ElementType::Node, 4254529698).unwrap();
+    //             target_op.unwrap();
+    //         }
+    //     });
+    // }
 
-    #[bench]
-    fn bench_find_with_cache(b: &mut Bencher) {
-        let pbf_file = "./resources/andorra-latest.osm.pbf";
-        let mut indexed_reader = IndexedReader::from_path_with_cache(pbf_file, 10000).unwrap();
+    // #[bench]
+    // fn bench_find_with_cache(b: &mut Bencher) {
+    //     let pbf_file = "./resources/andorra-latest.osm.pbf";
+    //     let mut indexed_reader = IndexedReader::from_path_with_cache(pbf_file, 10000).unwrap();
 
-        b.iter(|| {
-            for _ in 1..30 {
-                let target_op = indexed_reader.find(&ElementType::Node, 4254529698).unwrap();
-                target_op.unwrap();
-            }
-        });
-    }
+    //     b.iter(|| {
+    //         for _ in 1..30 {
+    //             let target_op = indexed_reader.find(&ElementType::Node, 4254529698).unwrap();
+    //             target_op.unwrap();
+    //         }
+    //     });
+    // }
 
-    #[bench]
-    fn bench_batch_operations(b: &mut Bencher) {
-        let pbf_file = "./resources/andorra-latest.osm.pbf";
-        let mut indexed_reader = IndexedReader::from_path(pbf_file).unwrap();
-        let node_ids = vec![4254529698, 4254529699, 4254529700];
+    // #[bench]
+    // fn bench_batch_operations(b: &mut Bencher) {
+    //     let pbf_file = "./resources/andorra-latest.osm.pbf";
+    //     let mut indexed_reader = IndexedReader::from_path(pbf_file).unwrap();
+    //     let node_ids = vec![4254529698, 4254529699, 4254529700];
 
-        b.iter(|| {
-            indexed_reader.find_nodes(&node_ids).unwrap();
-        });
-    }
+    //     b.iter(|| {
+    //         indexed_reader.find_nodes(&node_ids).unwrap();
+    //     });
+    // }
 }

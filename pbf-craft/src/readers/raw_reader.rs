@@ -10,7 +10,7 @@ use crate::codecs::blob::{BlobReader, DecodedBlob};
 use crate::codecs::block_decorators::{HeaderReader, PrimitiveReader};
 use crate::models::{Element, ElementType};
 
-/// A foundamental reader for PBF data.
+/// A fundamental reader for PBF data.
 ///
 /// The `PbfReader` struct provides functionality to read and process PBF files,
 /// which are commonly used for storing OpenStreetMap (OSM) data. It wraps around
@@ -55,23 +55,22 @@ impl<R: Read + Send> PbfReader<R> {
             let offset = self.blob_reader.offset;
             match self.blob_reader.next() {
                 Some(blob) => match blob.decode().expect("Failed to decode block.") {
-                    DecodedBlob::OsmHeader(_) => {
-                        return Some(BlobData {
-                            nodes: Vec::with_capacity(0),
-                            ways: Vec::with_capacity(0),
-                            relations: Vec::with_capacity(0),
-                            offset,
-                        })
-                    }
+                    DecodedBlob::OsmHeader(_) => Some(BlobData {
+                        nodes: Vec::with_capacity(0),
+                        ways: Vec::with_capacity(0),
+                        relations: Vec::with_capacity(0),
+                        offset,
+                    }),
                     DecodedBlob::OsmData(data) => {
                         let decorator = PrimitiveReader::new(data);
                         let (nodes, ways, relations) = decorator.get_all_elements();
-                        return Some(BlobData {
+
+                        Some(BlobData {
                             nodes,
                             ways,
                             relations,
                             offset,
-                        });
+                        })
                     }
                 },
                 None => None,
@@ -138,9 +137,9 @@ impl<R: Read + Send> PbfReader<R> {
     /// # Arguments
     ///
     /// * `inclination` - An optional reference to an `ElementType` that specifies the type of elements to find.
-    ///                   If `None`, all element types are considered.
+    ///   If `None`, all element types are considered.
     /// * `callback` - A closure that takes a reference to an `Element` and returns a boolean indicating
-    ///                whether the element should be included in the result. The closure must be `Send` and `Sync`.
+    ///   whether the element should be included in the result. The closure must be `Send` and `Sync`.
     ///
     /// # Returns
     ///
@@ -186,19 +185,19 @@ impl<R: Read + Send> PbfReader<R> {
                         ElementType::Node => p
                             .get_nodes()
                             .into_iter()
-                            .map(|i| Element::Node(i))
+                            .map(Element::Node)
                             .filter(&callback)
                             .collect::<Vec<Element>>(),
                         ElementType::Way => p
                             .get_ways()
                             .into_iter()
-                            .map(|i| Element::Way(i))
+                            .map(Element::Way)
                             .filter(&callback)
                             .collect::<Vec<Element>>(),
                         ElementType::Relation => p
                             .get_relations()
                             .into_iter()
-                            .map(|i| Element::Relation(i))
+                            .map(Element::Relation)
                             .filter(&callback)
                             .collect::<Vec<Element>>(),
                     };
@@ -207,17 +206,17 @@ impl<R: Read + Send> PbfReader<R> {
                     let (nodes, ways, relations) = p.get_all_elements();
                     let mut filterd_nodes: Vec<Element> = nodes
                         .into_iter()
-                        .map(|i| Element::Node(i))
+                        .map(Element::Node)
                         .filter(&callback)
                         .collect();
                     let mut filterd_ways: Vec<Element> = ways
                         .into_iter()
-                        .map(|i| Element::Way(i))
+                        .map(Element::Way)
                         .filter(&callback)
                         .collect();
                     let mut filterd_relations: Vec<Element> = relations
                         .into_iter()
-                        .map(|i| Element::Relation(i))
+                        .map(Element::Relation)
                         .filter(&callback)
                         .collect();
 
@@ -226,13 +225,10 @@ impl<R: Read + Send> PbfReader<R> {
                     Some(filterd_nodes)
                 }
             })
-            .reduce(
-                || Vec::new(),
-                |mut a, mut b| {
-                    a.append(&mut b);
-                    a
-                },
-            );
+            .reduce(Vec::new, |mut a, mut b| {
+                a.append(&mut b);
+                a
+            });
 
         Ok(result)
     }

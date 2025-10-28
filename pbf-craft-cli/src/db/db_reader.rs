@@ -22,9 +22,19 @@ pub enum DbElementType {
     Relation,
 }
 
-impl Into<ElementType> for DbElementType {
-    fn into(self) -> ElementType {
-        match self {
+// impl Into<ElementType> for DbElementType {
+//     fn into(self) -> ElementType {
+//         match self {
+//             DbElementType::Node => ElementType::Node,
+//             DbElementType::Way => ElementType::Way,
+//             DbElementType::Relation => ElementType::Relation,
+//         }
+//     }
+// }
+
+impl From<DbElementType> for ElementType {
+    fn from(value: DbElementType) -> Self {
+        match value {
             DbElementType::Node => ElementType::Node,
             DbElementType::Way => ElementType::Way,
             DbElementType::Relation => ElementType::Relation,
@@ -37,7 +47,7 @@ impl DatabaseReader {
         let mut config = Config::new();
         let _ = config
             .host(&host)
-            .port(port.clone())
+            .port(port)
             .dbname(&dbname)
             .user(&user)
             .password(&password);
@@ -83,25 +93,20 @@ impl DatabaseReader {
         let mut current_tag_id = 0;
         let mut current_tag: Option<Tag> = None;
         for node_row in node_cursor {
-            let mut node = Node::default();
-            node.id = node_row.get(0);
-            let latitude: i32 = node_row.get(1);
-            let longitude: i32 = node_row.get(2);
-            node.latitude = latitude as i64 * 100;
-            node.longitude = longitude as i64 * 100;
-            node.changeset_id = node_row.get(3);
-            let timestamp: NaiveDateTime = node_row.get(4);
-            let utc_timestamp: DateTime<Utc> = DateTime::from_naive_utc_and_offset(timestamp, Utc);
-            node.timestamp = Some(utc_timestamp);
-            let version: i64 = node_row.get(5);
-            node.version = version as i32;
-            node.visible = node_row.get(6);
-            let user_id: i64 = node_row.get(7);
-            let user_name: String = node_row.get(8);
-            node.user = Some(OsmUser {
-                id: user_id as i32,
-                name: user_name,
-            });
+            let mut node = Node {
+                id: node_row.get(0),
+                latitude: node_row.get::<_, i32>(1) as i64 * 100,
+                longitude: node_row.get::<_, i32>(2) as i64 * 100,
+                changeset_id: node_row.get(3),
+                timestamp: Some(DateTime::from_naive_utc_and_offset(node_row.get(4), Utc)),
+                version: node_row.get::<_, i64>(5) as i32,
+                visible: node_row.get(6),
+                user: Some(OsmUser {
+                    id: node_row.get::<_, i64>(7) as i32,
+                    name: node_row.get(8),
+                }),
+                ..Default::default()
+            };
 
             if node.id == current_tag_id && current_tag.is_some() {
                 node.tags.push(current_tag.unwrap());
@@ -109,7 +114,7 @@ impl DatabaseReader {
             }
             while current_tag_id <= node.id || current_tag.is_none() {
                 let has_tag = tag_iter.next();
-                if let None = has_tag {
+                if has_tag.is_none() {
                     break;
                 }
                 let tag_row = has_tag.unwrap();
@@ -163,21 +168,18 @@ impl DatabaseReader {
         let mut current_mem_id = 0;
         let mut current_mem: Option<WayNode> = None;
         for el_row in el_cursor {
-            let mut way = Way::default();
-            way.id = el_row.get(0);
-            way.changeset_id = el_row.get(1);
-            let timestamp: NaiveDateTime = el_row.get(2);
-            let utc_timestamp: DateTime<Utc> = DateTime::from_naive_utc_and_offset(timestamp, Utc);
-            way.timestamp = Some(utc_timestamp);
-            let version: i64 = el_row.get(3);
-            way.version = version as i32;
-            way.visible = el_row.get(4);
-            let user_id: i64 = el_row.get(5);
-            let user_name: String = el_row.get(6);
-            way.user = Some(OsmUser {
-                id: user_id as i32,
-                name: user_name,
-            });
+            let mut way = Way {
+                id: el_row.get(0),
+                changeset_id: el_row.get(1),
+                timestamp: Some(DateTime::from_naive_utc_and_offset(el_row.get(2), Utc)),
+                version: el_row.get::<_, i64>(3) as i32,
+                visible: el_row.get(4),
+                user: Some(OsmUser {
+                    id: el_row.get::<_, i64>(5) as i32,
+                    name: el_row.get(6),
+                }),
+                ..Default::default()
+            };
 
             if current_tag_id == way.id && current_tag.is_some() {
                 way.tags.push(current_tag.unwrap());
@@ -185,7 +187,7 @@ impl DatabaseReader {
             }
             while current_tag_id <= way.id || current_tag.is_none() {
                 let has_tag = tag_iter.next();
-                if let None = has_tag {
+                if has_tag.is_none() {
                     break;
                 }
                 let tag_row = has_tag.unwrap();
@@ -206,7 +208,7 @@ impl DatabaseReader {
             }
             while current_mem_id <= way.id || current_mem.is_none() {
                 let has_mem = member_iter.next();
-                if let None = has_mem {
+                if has_mem.is_none() {
                     break;
                 }
                 let mem_row = has_mem.unwrap();
@@ -265,21 +267,20 @@ impl DatabaseReader {
         let mut current_mem_id = 0;
         let mut current_mem: Option<RelationMember> = None;
         for el_row in el_cursor {
-            let mut relation = Relation::default();
-            relation.id = el_row.get(0);
-            relation.changeset_id = el_row.get(1);
             let timestamp: NaiveDateTime = el_row.get(2);
             let utc_timestamp: DateTime<Utc> = DateTime::from_naive_utc_and_offset(timestamp, Utc);
-            relation.timestamp = Some(utc_timestamp);
-            let version: i64 = el_row.get(3);
-            relation.version = version as i32;
-            relation.visible = el_row.get(4);
-            let user_id: i64 = el_row.get(5);
-            let user_name: String = el_row.get(6);
-            relation.user = Some(OsmUser {
-                id: user_id as i32,
-                name: user_name,
-            });
+            let mut relation = Relation {
+                id: el_row.get(0),
+                changeset_id: el_row.get(1),
+                timestamp: Some(utc_timestamp),
+                version: el_row.get::<_, i64>(3) as i32,
+                visible: el_row.get(4),
+                user: Some(OsmUser {
+                    id: el_row.get::<_, i64>(5) as i32,
+                    name: el_row.get(6),
+                }),
+                ..Default::default()
+            };
 
             if relation.id == current_tag_id && current_tag.is_some() {
                 relation.tags.push(current_tag.unwrap());
@@ -287,7 +288,7 @@ impl DatabaseReader {
             }
             while current_tag_id <= relation.id || current_tag.is_none() {
                 let has_tag = tag_iter.next();
-                if let None = has_tag {
+                if has_tag.is_none() {
                     break;
                 }
                 let tag_row = has_tag.unwrap();
@@ -308,7 +309,7 @@ impl DatabaseReader {
             }
             while current_mem_id <= relation.id || current_mem.is_none() {
                 let has_mem = member_iter.next();
-                if let None = has_mem {
+                if has_mem.is_none() {
                     break;
                 }
                 let mem_row = has_mem.unwrap();

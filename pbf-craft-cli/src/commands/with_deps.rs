@@ -2,7 +2,6 @@ use std::str::FromStr;
 
 use clap::Args;
 use colored_json::prelude::*;
-use serde_json;
 
 use pbf_craft::models::{Element, ElementType};
 use pbf_craft::readers::IndexedReader;

@@ -1,4 +1,4 @@
-name: Main
+name: CI
 
 on:
   push:
@@ -11,11 +11,24 @@ env:
 
 jobs:
   build:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
-      - name: Build
-        run: cargo build --release
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      # - name: Run clippy
+      #   run: cargo clippy --all-targets --all-features -- -D warnings
+
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo test --workspace --all-features --verbose
