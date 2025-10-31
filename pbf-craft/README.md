@@ -15,7 +15,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-pbf-craft = "0.9"
+pbf-craft = "0.10"
 ```
 
 Reading a PBF file:
