@@ -419,14 +419,40 @@ impl<T: PbfRandomRead> IndexedReader<T> {
         Ok(result)
     }
 
+    /// Resolves a relation with all its node/way/relation dependencies.
+    ///
+    /// Member relations are resolved recursively. A `visiting` set tracks the relations on the
+    /// current recursion chain: revisiting one (a circular dependency) returns an error instead
+    /// of recursing forever / overflowing the stack. Relations reached through different paths
+    /// (diamonds) are allowed because each frame removes its own id on the way out.
     fn get_relation_with_deps(&mut self, relation_id: i64) -> anyhow::Result<Vec<Element>> {
+        let mut visiting = HashSet::new();
+        self.get_relation_with_deps_inner(relation_id, &mut visiting)
+    }
+
+    fn get_relation_with_deps_inner(
+        &mut self,
+        relation_id: i64,
+        visiting: &mut HashSet<i64>,
+    ) -> anyhow::Result<Vec<Element>> {
+        if !visiting.insert(relation_id) {
+            bail!(
+                "circular relation dependency detected: relation {} is already on the dependency chain",
+                relation_id
+            );
+        }
+
         let mut result = Vec::new();
 
-        let relation = self.find_relation(relation_id)?;
-        if relation.is_none() {
-            return Ok(Vec::with_capacity(0));
-        }
-        let relation = relation.unwrap();
+        let relation = match self.find_relation(relation_id)? {
+            Some(relation) => relation,
+            None => {
+                // Not on the chain after all; leave the set clean so a later lookup of the
+                // same id through another path does not report a false cycle.
+                visiting.remove(&relation_id);
+                return Ok(Vec::with_capacity(0));
+            }
+        };
         result.push(Element::Relation(relation.clone()));
 
         let node_ids: Vec<i64> = relation
@@ -455,13 +481,9 @@ impl<T: PbfRandomRead> IndexedReader<T> {
                 }
             })
             .collect();
-        result = way_ids
-            .into_iter()
-            .map(|way_id| self.get_way_with_deps(way_id).unwrap())
-            .fold(result, |mut acc, x| {
-                acc.extend(x);
-                acc
-            });
+        for way_id in way_ids {
+            result.append(&mut self.get_way_with_deps(way_id)?);
+        }
 
         let relation_ids: Vec<i64> = relation
             .members
@@ -474,14 +496,11 @@ impl<T: PbfRandomRead> IndexedReader<T> {
                 }
             })
             .collect();
-        result = relation_ids
-            .into_iter()
-            .map(|relation_id| self.get_relation_with_deps(relation_id).unwrap())
-            .fold(result, |mut acc, x| {
-                acc.extend(x);
-                acc
-            });
+        for member_relation_id in relation_ids {
+            result.append(&mut self.get_relation_with_deps_inner(member_relation_id, visiting)?);
+        }
 
+        visiting.remove(&relation_id);
         Ok(result)
     }
 }

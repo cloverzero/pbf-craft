@@ -154,7 +154,8 @@ impl PrimitiveReader {
     }
 
     fn process_dense(&self, dense: &osmformat::DenseNodes) -> Vec<Node> {
-        let mut dense_info_iter = DenseInfoIterator::new(dense.get_denseinfo());
+        let node_count = dense.id.len();
+        let mut dense_info_iter = DenseInfoIterator::new(dense.get_denseinfo(), node_count);
         let mut id_iter = dense.get_id().iter();
         let mut lat_iter = dense.get_lat().iter();
         let mut lon_iter = dense.get_lon().iter();
@@ -162,6 +163,10 @@ impl PrimitiveReader {
         let mut kv_iter = dense.get_keys_vals().iter();
 
         let mut result = Vec::with_capacity(dense.id.len());
+        // DenseInfo timestamp/changeset/uid/user_sid columns are parallel arrays: either the
+        // file carries them for every node or for none. Absent columns mean "no metadata", so
+        // nodes must read back `timestamp: None` rather than the epoch.
+        let has_timestamps = !dense.get_denseinfo().get_timestamp().is_empty();
         let mut node_id: i64 = 0;
         let mut latitude: i64 = 0;
         let mut longitude: i64 = 0;
@@ -179,7 +184,11 @@ impl PrimitiveReader {
                     let mut node = Node {
                         id: node_id,
                         version: info.version,
-                        timestamp: Some(self.decoder.decode_timestamp(info.timestamp)),
+                        timestamp: if has_timestamps {
+                            Some(self.decoder.decode_timestamp(info.timestamp))
+                        } else {
+                            None
+                        },
                         changeset_id: info.changeset,
                         user: Some(OsmUser {
                             id: info.uid,
@@ -222,13 +231,20 @@ impl PrimitiveReader {
             id,
             tags,
             version: info.get_version(),
-            timestamp: Some(self.decoder.decode_timestamp(info.get_timestamp())),
+            // An absent timestamp must stay None, not become the epoch.
+            timestamp: if info.has_timestamp() {
+                Some(self.decoder.decode_timestamp(info.get_timestamp()))
+            } else {
+                None
+            },
             changeset_id: info.get_changeset(),
             user: Some(OsmUser {
                 id: info.get_uid(),
                 name: self.decoder.decode_string(info.get_user_sid() as usize),
             }),
-            visible: true,
+            // The visible flag defaults to true when absent (proto2 get_visible() returns
+            // false for unset optional fields, which would wrongly mark elements deleted).
+            visible: info.has_visible() && info.get_visible(),
         }
     }
 
@@ -387,6 +403,7 @@ pub struct DenseInfoIterator<'a> {
     uid_iter: std::slice::Iter<'a, i32>,
     user_sid_iter: std::slice::Iter<'a, i32>,
     visible_iter: std::slice::Iter<'a, bool>,
+    remaining: usize,
     timestamp: i64,
     changeset: i64,
     uid: i32,
@@ -394,7 +411,11 @@ pub struct DenseInfoIterator<'a> {
 }
 
 impl<'a> DenseInfoIterator<'a> {
-    fn new(info: &'a osmformat::DenseInfo) -> DenseInfoIterator<'a> {
+    /// Iterates over `node_count` dense nodes. Each DenseInfo column is optional: missing
+    /// columns fall back to their defaults (timestamp/changeset/uid/user_sid 0, visible true),
+    /// so files that omit a column (e.g. no timestamps) or omit DenseInfo entirely still
+    /// decode without error.
+    fn new(info: &'a osmformat::DenseInfo, node_count: usize) -> DenseInfoIterator<'a> {
         DenseInfoIterator {
             version_iter: info.get_version().iter(),
             timestamp_iter: info.get_timestamp().iter(),
@@ -402,6 +423,7 @@ impl<'a> DenseInfoIterator<'a> {
             uid_iter: info.get_uid().iter(),
             user_sid_iter: info.get_user_sid().iter(),
             visible_iter: info.get_visible().iter(),
+            remaining: node_count,
             timestamp: 0,
             changeset: 0,
             uid: 0,
@@ -414,36 +436,28 @@ impl<'a> Iterator for DenseInfoIterator<'a> {
     type Item = DenseInfoItem;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match (
-            self.version_iter.next(),
-            self.timestamp_iter.next(),
-            self.changeset_iter.next(),
-            self.uid_iter.next(),
-            self.user_sid_iter.next(),
-            self.visible_iter.next(),
-        ) {
-            (
-                Some(&version),
-                Some(d_timestamp),
-                Some(d_changeset),
-                Some(d_uid),
-                Some(d_user_sid),
-                visible,
-            ) => {
-                self.timestamp += *d_timestamp;
-                self.changeset += *d_changeset;
-                self.uid += *d_uid;
-                self.user_sid += *d_user_sid;
-                Some(DenseInfoItem {
-                    version,
-                    timestamp: self.timestamp,
-                    changeset: self.changeset,
-                    uid: self.uid,
-                    user_sid: self.user_sid,
-                    visible: *visible.unwrap_or(&true),
-                })
-            }
-            _ => None,
+        if self.remaining == 0 {
+            return None;
         }
+        self.remaining -= 1;
+        let version = self.version_iter.next().copied().unwrap_or(0);
+        let d_timestamp = self.timestamp_iter.next().copied().unwrap_or(0);
+        let d_changeset = self.changeset_iter.next().copied().unwrap_or(0);
+        let d_uid = self.uid_iter.next().copied().unwrap_or(0);
+        let d_user_sid = self.user_sid_iter.next().copied().unwrap_or(0);
+        let visible = self.visible_iter.next().copied().unwrap_or(true);
+
+        self.timestamp += d_timestamp;
+        self.changeset += d_changeset;
+        self.uid += d_uid;
+        self.user_sid += d_user_sid;
+        Some(DenseInfoItem {
+            version,
+            timestamp: self.timestamp,
+            changeset: self.changeset,
+            uid: self.uid,
+            user_sid: self.user_sid,
+            visible,
+        })
     }
 }

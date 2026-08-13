@@ -12,15 +12,20 @@ struct StringTableBuilder {
 }
 
 impl StringTableBuilder {
+    /// Creates an empty string table with the reserved index 0 pre-populated.
+    ///
+    /// The PBF spec reserves string-table index 0 as the dense-format tag terminator, so
+    /// entry 0 must ALWAYS be the blank string. `add` therefore returns 0 for `""` without
+    /// inserting a duplicate entry, and no other string can ever occupy index 0.
     pub fn new() -> Self {
-        Self {
-            strings: Vec::new(),
-            id_map: HashMap::new(),
-        }
+        let strings = vec![String::new()];
+        let mut id_map = HashMap::new();
+        id_map.insert(String::new(), 0);
+        Self { strings, id_map }
     }
     pub fn add(&mut self, string: String) -> i32 {
-        if self.id_map.contains_key(&string) {
-            return (*self.id_map.get(&string).unwrap()) as i32;
+        if let Some(id) = self.id_map.get(&string) {
+            return *id as i32;
         }
         self.strings.push(string.clone());
         let id = self.strings.len() - 1;
@@ -68,6 +73,11 @@ impl PrimitiveBuilder {
         let mut previous_uid = 0;
         let mut previous_sid = 0;
 
+        // The DenseInfo timestamp column is a parallel array: it must cover every node or
+        // none. Emit it only when all nodes carry a timestamp, otherwise omit it entirely so
+        // the read side reports `timestamp: None` instead of inventing the epoch.
+        let write_timestamps = nodes.iter().all(|node| node.timestamp.is_some());
+
         for node in nodes {
             dense.id.push(node.id - previous_id);
 
@@ -80,17 +90,15 @@ impl PrimitiveBuilder {
                 .changeset
                 .push(node.changeset_id - previous_changeset);
             dense_info.version.push(node.version);
-            dense_info.visible.push(true);
+            dense_info.visible.push(node.visible);
 
-            previous_timestamp = if let Some(timestamp) = node.timestamp {
-                let tt = self.codec.encode_timestamp(timestamp);
+            if write_timestamps {
+                let tt = self
+                    .codec
+                    .encode_timestamp(node.timestamp.expect("checked above"));
                 dense_info.timestamp.push(tt - previous_timestamp);
-                tt
-            } else {
-                let tt = 0i64;
-                dense_info.timestamp.push(tt - previous_timestamp);
-                tt
-            };
+                previous_timestamp = tt;
+            }
 
             (previous_uid, previous_sid) = if let Some(user) = node.user {
                 dense_info.uid.push(user.id - previous_uid);
@@ -148,8 +156,6 @@ impl PrimitiveBuilder {
                 info.set_visible(node.visible);
                 if let Some(timestamp) = node.timestamp {
                     info.set_timestamp(self.codec.encode_timestamp(timestamp));
-                } else {
-                    info.set_timestamp(0);
                 }
                 if let Some(user) = node.user {
                     info.set_uid(user.id);
@@ -160,6 +166,9 @@ impl PrimitiveBuilder {
                     let sid = self.string_table.add("".to_string());
                     info.set_user_sid(sid as u32);
                 }
+                // Without this the Info is dropped and sparse nodes lose ALL metadata
+                // (version, timestamp, changeset, user, visible) on the read side.
+                osm_node.set_info(info);
 
                 osm_node
             })
@@ -297,6 +306,16 @@ impl PrimitiveBuilder {
                 Element::Relation(relation) => relations.push(relation),
             }
         }
+        // Dense encoding cannot represent a tag with an empty key/value: index 0 is the
+        // reserved node terminator, so `add("")` resolves to 0 and the decoder would treat
+        // the tag as the end of the node. Fall the whole block back to sparse nodes, where
+        // index 0 is a legitimate string-table reference.
+        let use_dense = use_dense
+            && !nodes.iter().any(|node| {
+                node.tags
+                    .iter()
+                    .any(|tag| tag.key.is_empty() || tag.value.is_empty())
+            });
         if !nodes.is_empty() {
             self.add_nodes(nodes, use_dense);
         }

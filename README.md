@@ -44,7 +44,7 @@ Writing a PBF file:
 use pbf_craft::models::{Element, Node};
 use pbf_craft::writers::PbfWriter;
 
-let mut writer = PbfWriter::from_path("resources/output.osm.pbf", true).unwrap();
+let mut writer = PbfWriter::from_path(std::env::temp_dir().join("output.osm.pbf"), true).unwrap();
 writer.write(Element::Node(Node::default())).unwrap();
 writer.finish().unwrap();
 ```
