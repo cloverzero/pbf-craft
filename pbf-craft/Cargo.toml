@@ -15,11 +15,9 @@ exclude = ["resources"]
 
 [dependencies]
 anyhow = { version = "1.0", features = ["backtrace"] }
-base16ct = "0.2.0"
 byteorder = "1"
 chrono = { version = "0.4", features = ["serde"] }
 flate2 = "1.0"
-md-5 = "0.10.5"
 protobuf = "2"
 quick_cache = "0.6"
 rayon = "1"

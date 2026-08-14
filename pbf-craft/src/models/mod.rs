@@ -74,10 +74,10 @@ impl Default for ElementBase {
     fn default() -> Self {
         Self {
             id: 0,
-            version: 0,
+            version: -1,
             timestamp: None,
             user: None,
-            changeset_id: 0,
+            changeset_id: -1,
             visible: true,
             tags: Vec::new(),
         }
@@ -120,10 +120,10 @@ impl Default for Node {
     fn default() -> Self {
         Self {
             id: 0,
-            version: 0,
+            version: -1,
             timestamp: None,
             user: None,
-            changeset_id: 0,
+            changeset_id: -1,
             latitude: 0,
             longitude: 0,
             visible: true,
@@ -165,10 +165,10 @@ impl Default for Way {
     fn default() -> Self {
         Self {
             id: 0,
-            version: 0,
+            version: -1,
             timestamp: None,
             user: None,
-            changeset_id: 0,
+            changeset_id: -1,
             visible: true,
             tags: Vec::new(),
             way_nodes: Vec::new(),
@@ -233,10 +233,10 @@ impl Default for Relation {
     fn default() -> Self {
         Self {
             id: 0,
-            version: 0,
+            version: -1,
             timestamp: None,
             user: None,
-            changeset_id: 0,
+            changeset_id: -1,
             visible: true,
             tags: Vec::new(),
             members: Vec::new(),

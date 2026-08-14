@@ -56,7 +56,7 @@ impl DatabaseReader {
 
     pub fn read<F>(&self, mut callback: F) -> anyhow::Result<()>
     where
-        F: FnMut(Element),
+        F: FnMut(Element) -> anyhow::Result<()>,
     {
         blue_ln!("Exporting nodes ...");
         self.read_nodes(&mut callback)?;
@@ -70,7 +70,7 @@ impl DatabaseReader {
 
     fn read_nodes<F>(&self, callback: &mut F) -> anyhow::Result<()>
     where
-        F: FnMut(Element),
+        F: FnMut(Element) -> anyhow::Result<()>,
     {
         let mut el_client = self.config.connect(NoTls)?;
         let node_cursor = PagingCursor::new(
@@ -129,7 +129,7 @@ impl DatabaseReader {
                 }
             }
             let el = Element::Node(node);
-            callback(el)
+            callback(el)?
         }
 
         Ok(())
@@ -137,7 +137,7 @@ impl DatabaseReader {
 
     fn read_ways<F>(&self, callback: &mut F) -> anyhow::Result<()>
     where
-        F: FnMut(Element),
+        F: FnMut(Element) -> anyhow::Result<()>,
     {
         let mut el_client = self.config.connect(NoTls)?;
         let el_cursor = PagingCursor::new(
@@ -228,7 +228,7 @@ impl DatabaseReader {
             }
 
             let el = Element::Way(way);
-            callback(el)
+            callback(el)?
         }
 
         Ok(())
@@ -236,7 +236,7 @@ impl DatabaseReader {
 
     fn read_relations<F>(&self, callback: &mut F) -> anyhow::Result<()>
     where
-        F: FnMut(Element),
+        F: FnMut(Element) -> anyhow::Result<()>,
     {
         let mut el_client = self.config.connect(NoTls)?;
         let el_cursor = PagingCursor::new(
@@ -331,7 +331,7 @@ impl DatabaseReader {
             }
 
             let el = Element::Relation(relation);
-            callback(el)
+            callback(el)?
         }
 
         Ok(())

@@ -37,7 +37,7 @@ pub struct SearchCommand {
 }
 
 impl SearchCommand {
-    pub fn run(self) {
+    pub fn run(self) -> anyhow::Result<()> {
         let result = if let (Some(eltype), Some(elid)) = (&self.eltype, &self.elid) {
             blue!("Searching ");
             dark_yellow!("{} ", &self.file);
@@ -45,17 +45,11 @@ impl SearchCommand {
             dark_yellow!("{}#{} ", eltype, elid);
             println!("...");
 
-            let element_type_result = ElementType::from_str(eltype);
-            if let Err(err) = element_type_result {
-                eprintln!("{}", err);
-                return;
-            }
-            let element_type = element_type_result.unwrap();
+            let element_type = ElementType::from_str(eltype)?;
 
             if self.exact.is_none() || self.exact.unwrap() {
-                let mut indexed_reader =
-                    IndexedReader::from_path(&self.file).expect("Indexed reader loading failed");
-                let find_result = indexed_reader.find(&element_type, *elid).unwrap();
+                let mut indexed_reader = IndexedReader::from_path(&self.file)?;
+                let find_result = indexed_reader.find(&element_type, *elid)?;
                 match find_result {
                     Some(ec) => {
                         vec![ec]
@@ -63,36 +57,31 @@ impl SearchCommand {
                     None => Vec::with_capacity(0),
                 }
             } else {
-                let reader = PbfReader::from_path(&self.file).unwrap();
-                reader
-                    .par_find(None, |element| match (element, &element_type) {
-                        (Element::Node(node), ElementType::Node) => node.id == *elid,
-                        (Element::Way(way), ElementType::Node) => {
-                            for way_node in &way.way_nodes {
-                                if way_node.id == *elid {
-                                    return true;
-                                }
+                let reader = PbfReader::from_path(&self.file)?;
+                reader.par_find(None, |element| match (element, &element_type) {
+                    (Element::Node(node), ElementType::Node) => node.id == *elid,
+                    (Element::Way(way), ElementType::Node) => {
+                        for way_node in &way.way_nodes {
+                            if way_node.id == *elid {
+                                return true;
                             }
+                        }
 
-                            false
-                        }
-                        (Element::Way(way), ElementType::Way) => way.id == *elid,
-                        (Element::Relation(relation), ElementType::Relation) => {
-                            relation.id == *elid
-                        }
-                        (Element::Relation(relation), _) => {
-                            for member in &relation.members {
-                                if member.member_id == *elid && member.member_type.eq(&element_type)
-                                {
-                                    return true;
-                                }
+                        false
+                    }
+                    (Element::Way(way), ElementType::Way) => way.id == *elid,
+                    (Element::Relation(relation), ElementType::Relation) => relation.id == *elid,
+                    (Element::Relation(relation), _) => {
+                        for member in &relation.members {
+                            if member.member_id == *elid && member.member_type.eq(&element_type) {
+                                return true;
                             }
-
-                            false
                         }
-                        _ => false,
-                    })
-                    .expect("read pbf failed")
+
+                        false
+                    }
+                    _ => false,
+                })?
             }
         } else if self.tagkey.is_some() || self.tagvalue.is_some() {
             blue!("Searching ");
@@ -104,20 +93,18 @@ impl SearchCommand {
                 &self.tagvalue
             );
             println!("...");
-            let reader = PbfReader::from_path(&self.file).unwrap();
-            reader
-                .par_find(None, |element| match element {
-                    Element::Node(node) => does_tag_match(&node.tags, &self.tagkey, &self.tagvalue),
-                    Element::Way(way) => does_tag_match(&way.tags, &self.tagkey, &self.tagvalue),
-                    Element::Relation(relation) => {
-                        does_tag_match(&relation.tags, &self.tagkey, &self.tagvalue)
-                    }
-                })
-                .expect("read pbf failed")
+            let reader = PbfReader::from_path(&self.file)?;
+            reader.par_find(None, |element| match element {
+                Element::Node(node) => does_tag_match(&node.tags, &self.tagkey, &self.tagvalue),
+                Element::Way(way) => does_tag_match(&way.tags, &self.tagkey, &self.tagvalue),
+                Element::Relation(relation) => {
+                    does_tag_match(&relation.tags, &self.tagkey, &self.tagvalue)
+                }
+            })?
         } else if self.pair.is_some() {
             let node_ids = self.pair.unwrap();
             if node_ids.len() < 2 {
-                panic!("At least two nodes are required");
+                anyhow::bail!("At least two nodes are required");
             }
             let first = node_ids[0];
             let second = node_ids[1];
@@ -126,17 +113,15 @@ impl SearchCommand {
             blue!("for ");
             dark_yellow!("ways containing the node pair of {} and {} ", first, second);
             println!("...");
-            let reader = PbfReader::from_path(&self.file).unwrap();
-            reader
-                .par_find(Some(&ElementType::Way), |el| {
-                    if let Element::Way(way) = el {
-                        return way.way_nodes.iter().any(|ref_node| ref_node.id == first)
-                            && way.way_nodes.iter().any(|ref_node| ref_node.id == second);
-                    }
+            let reader = PbfReader::from_path(&self.file)?;
+            reader.par_find(Some(&ElementType::Way), |el| {
+                if let Element::Way(way) = el {
+                    return way.way_nodes.iter().any(|ref_node| ref_node.id == first)
+                        && way.way_nodes.iter().any(|ref_node| ref_node.id == second);
+                }
 
-                    false
-                })
-                .expect("node pair error")
+                false
+            })?
         } else {
             yellow!("Your input is incorrect");
             Vec::with_capacity(0)
@@ -144,12 +129,10 @@ impl SearchCommand {
 
         println!(
             "{}",
-            serde_json::to_string_pretty(&result)
-                .unwrap()
-                .to_colored_json_auto()
-                .unwrap()
+            serde_json::to_string_pretty(&result)?.to_colored_json_auto()?
         );
         println!("{} elemets found", result.len());
+        Ok(())
     }
 }
 

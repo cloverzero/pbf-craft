@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Write};
-use std::str;
+use std::io::{BufReader, BufWriter, Write};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -13,12 +13,44 @@ use crate::models::{BasicElement, Element, ElementType, Node, Relation, Way};
 use crate::readers::traits::BlobData;
 use crate::utils::file;
 
-fn get_index_path_from_pbf_path(pbf_path: &str) -> String {
-    let mut index_path = pbf_path.to_owned();
-    let last_dot_index = index_path.rfind('.').unwrap();
-    index_path.replace_range(last_dot_index..pbf_path.len(), ".pif");
+/// Version byte of the `.pif` index file format (magic + file size + mtime + entries).
+const PIF_MAGIC: u8 = 0x01;
 
-    index_path
+fn get_index_path_from_pbf_path(pbf_path: &str) -> String {
+    match pbf_path.rfind('.') {
+        Some(dot) => {
+            let mut index_path = pbf_path.to_owned();
+            index_path.replace_range(dot..pbf_path.len(), ".pif");
+            index_path
+        }
+        None => format!("{}.pif", pbf_path),
+    }
+}
+
+/// Cheap staleness signature of a PBF file: size + last-modified time (nanoseconds).
+///
+/// This replaces the previous full-file MD5, which forced a full read of the PBF (minutes on
+/// planet-sized files) on every open. A file changed within the same nanosecond while keeping
+/// the same size is the only way to fool it; acceptable for an index cache.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PbfFileSignature {
+    file_size: u64,
+    modified_nanos: i64,
+}
+
+impl PbfFileSignature {
+    fn of(pbf_file: &str) -> anyhow::Result<Self> {
+        let metadata = std::fs::metadata(pbf_file)?;
+        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let modified_nanos = modified
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as i64)
+            .unwrap_or(0);
+        Ok(Self {
+            file_size: metadata.len(),
+            modified_nanos,
+        })
+    }
 }
 
 struct PbfIndex {
@@ -34,25 +66,25 @@ impl PbfIndex {
         }
 
         let index_file_path = get_index_path_from_pbf_path(pbf_file);
-        // Calculating the checksum of the pbf file...
-        let checksum = file::checksum(pbf_file)?;
+        let signature = PbfFileSignature::of(pbf_file)?;
 
         if file::exists(&index_file_path) {
-            // PBF index file already exists
-            let (pi, checksum_in_file) = PbfIndex::load_from_file(&index_file_path)?;
-            if checksum.eq(&checksum_in_file) {
-                // The checksum is consistent. The index loading is complete
-                return Ok(pi);
+            // Load the existing index; a stale format, an unreadable file, or a signature
+            // mismatch all mean "rebuild".
+            if let Ok((index, signature_in_file)) = PbfIndex::load_from_file(&index_file_path) {
+                if signature == signature_in_file {
+                    return Ok(index);
+                }
             }
         }
 
         let pbf_index = PbfIndex::load_from_pbf_file(pbf_file)?;
-        pbf_index.persist(&index_file_path, &checksum)?;
+        pbf_index.persist(&index_file_path, &signature)?;
 
         Ok(pbf_index)
     }
 
-    fn load_from_file(index_path: &str) -> anyhow::Result<(PbfIndex, String)> {
+    fn load_from_file(index_path: &str) -> anyhow::Result<(PbfIndex, PbfFileSignature)> {
         let mut node_index: BTreeMap<i64, u64> = BTreeMap::new();
         let mut way_index: BTreeMap<i64, u64> = BTreeMap::new();
         let mut relation_index: BTreeMap<i64, u64> = BTreeMap::new();
@@ -60,9 +92,18 @@ impl PbfIndex {
         let index_file = File::open(index_path)?;
         let mut reader = BufReader::new(index_file);
 
-        let mut md5_buf = [0u8; 32];
-        reader.read_exact(&mut md5_buf)?;
-        let checksum = str::from_utf8(&md5_buf)?;
+        // Old-format index files start with a 32-char hex MD5; the new format starts with a
+        // magic byte. Anything else is stale and must be rebuilt.
+        let magic = reader.read_u8()?;
+        if magic != PIF_MAGIC {
+            bail!("stale or unsupported index format (magic {:#x})", magic);
+        }
+        let file_size = reader.read_u64::<LittleEndian>()?;
+        let modified_nanos = reader.read_i64::<LittleEndian>()?;
+        let signature = PbfFileSignature {
+            file_size,
+            modified_nanos,
+        };
 
         loop {
             let write_type = reader.read_u8()?;
@@ -86,7 +127,7 @@ impl PbfIndex {
                 way_index,
                 relation_index,
             },
-            checksum.to_string(),
+            signature,
         ))
     }
 
@@ -97,7 +138,7 @@ impl PbfIndex {
         let mut relation_index: BTreeMap<i64, u64> = BTreeMap::new();
 
         let mut reader = PbfReader::from_path(pbf_file_path)?;
-        while let Some(blob_data) = reader.read_next_blob() {
+        while let Some(blob_data) = reader.read_next_blob()? {
             if !blob_data.nodes.is_empty() {
                 let last = blob_data.nodes.last().unwrap();
                 node_index.insert(last.id, blob_data.offset);
@@ -130,21 +171,23 @@ impl PbfIndex {
         range.next().map(|(_, offset)| *offset)
     }
 
-    fn persist(&self, index_path: &str, checksum: &str) -> anyhow::Result<()> {
-        // Saving the index to file...
-        let index_file = File::create(index_path)?;
-        let mut writer = BufWriter::new(index_file);
-        // write checksum
-        writer.write_all(checksum.as_bytes())?;
-        // write index
-        Self::persist_index_map(&mut writer, &self.node_index, 1)?;
-        Self::persist_index_map(&mut writer, &self.way_index, 2)?;
-        Self::persist_index_map(&mut writer, &self.relation_index, 3)?;
-
-        // write an end symbol
-        writer.write_u8(0)?;
-        writer.flush()?;
-        // Saving completed
+    fn persist(&self, index_path: &str, signature: &PbfFileSignature) -> anyhow::Result<()> {
+        // Write to a temp file first so a crash mid-write never leaves a half-written index.
+        let tmp_path = format!("{}.tmp", index_path);
+        {
+            let index_file = File::create(&tmp_path)?;
+            let mut writer = BufWriter::new(index_file);
+            writer.write_u8(PIF_MAGIC)?;
+            writer.write_u64::<LittleEndian>(signature.file_size)?;
+            writer.write_i64::<LittleEndian>(signature.modified_nanos)?;
+            Self::persist_index_map(&mut writer, &self.node_index, 1)?;
+            Self::persist_index_map(&mut writer, &self.way_index, 2)?;
+            Self::persist_index_map(&mut writer, &self.relation_index, 3)?;
+            // write an end symbol
+            writer.write_u8(0)?;
+            writer.flush()?;
+        }
+        std::fs::rename(&tmp_path, index_path)?;
         Ok(())
     }
 
@@ -286,17 +329,17 @@ impl<T: PbfRandomRead> IndexedReader<T> {
             .collect();
         let result: Vec<E> = offsets
             .into_iter()
-            .flat_map(|offset| {
-                let blob_data = self
-                    .pbf_reader
-                    .read_blob_by_offset(offset)
-                    .expect("Failed to read blob by offset");
-                get_vec(&blob_data)
+            .map(|offset| {
+                let blob_data = self.pbf_reader.read_blob_by_offset(offset)?;
+                Ok(get_vec(&blob_data)
                     .iter()
                     .filter(|e| id_sets.contains(&e.get_id()))
                     .cloned()
-                    .collect::<Vec<E>>()
+                    .collect::<Vec<E>>())
             })
+            .collect::<anyhow::Result<Vec<Vec<E>>>>()?
+            .into_iter()
+            .flatten()
             .collect();
         Ok(result)
     }
@@ -522,14 +565,59 @@ mod tests {
 
     #[test]
     fn test_index_from_file() {
-        let index_file = "./resources/andorra-latest.osm.pif";
-        let (pbf_index, checksum) = PbfIndex::load_from_file(index_file).unwrap();
-        assert_eq!(&checksum, "ba8a2a59183a49c3e624246b8e8138a5");
+        // Build a fresh index in a temp location and verify it persists and reloads with a
+        // matching file signature (no full-file checksum, no rebuild on second open).
+        let pbf_file = "./resources/andorra-latest.osm.pbf";
+        let temp_dir =
+            std::env::temp_dir().join(format!("pbf_craft_index_test_{}", std::process::id()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let temp_pbf = temp_dir.join("andorra-latest.osm.pbf");
+        std::fs::copy(pbf_file, &temp_pbf).unwrap();
+        let pbf_path = temp_pbf.to_str().unwrap();
 
-        let r1 = pbf_index.get_offset(&ElementType::Node, 52263877);
-        let r2 = pbf_index.get_offset(&ElementType::Node, 52263878);
-        assert_eq!(r1, Some(171));
-        assert_eq!(r2, Some(49494));
+        let index = PbfIndex::new(pbf_path).unwrap();
+        assert_eq!(index.get_offset(&ElementType::Node, 52263877), Some(171));
+
+        let index_path = get_index_path_from_pbf_path(pbf_path);
+        let (pbf_index, signature) = PbfIndex::load_from_file(&index_path).unwrap();
+        assert_eq!(signature, PbfFileSignature::of(pbf_path).unwrap());
+        assert_eq!(
+            pbf_index.get_offset(&ElementType::Node, 52263878),
+            Some(49494)
+        );
+
+        // A second PbfIndex::new must reuse the persisted index (signature match), not rebuild.
+        let index2 = PbfIndex::new(pbf_path).unwrap();
+        assert_eq!(index2.get_offset(&ElementType::Node, 52263877), Some(171));
+
+        std::fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
+    fn test_stale_index_format_is_rebuilt() {
+        // The old (pre-2.5) index format starts with a 32-char hex checksum, not the magic
+        // byte; such a file must be detected as stale and rebuilt by PbfIndex::new.
+        let pbf_file = "./resources/andorra-latest.osm.pbf";
+        let temp_dir =
+            std::env::temp_dir().join(format!("pbf_craft_stale_index_test_{}", std::process::id()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let temp_pbf = temp_dir.join("andorra-latest.osm.pbf");
+        std::fs::copy(pbf_file, &temp_pbf).unwrap();
+        let pbf_path = temp_pbf.to_str().unwrap();
+
+        // Write a stale-format index next to the temp pbf.
+        let index_path = get_index_path_from_pbf_path(pbf_path);
+        let stale = "ba8a2a59183a49c3e624246b8e8138a5".to_string();
+        std::fs::write(&index_path, stale).unwrap();
+
+        // load_from_file must refuse the stale format...
+        assert!(PbfIndex::load_from_file(&index_path).is_err());
+
+        // ...and PbfIndex::new must transparently rebuild it.
+        let index = PbfIndex::new(pbf_path).unwrap();
+        assert_eq!(index.get_offset(&ElementType::Node, 52263877), Some(171));
+
+        std::fs::remove_dir_all(&temp_dir).unwrap();
     }
 
     #[test]

@@ -422,3 +422,87 @@ fn writer_declares_historical_information_for_invisible() {
         "visible=false must survive roundtrip"
     );
 }
+
+#[test]
+fn roundtrip_user_presence() {
+    // N1: a userless element must read back as user=None (not a phantom uid-0 user), and a
+    // real user must keep its id/name — in both dense and sparse encodings.
+    let mut with_user = base_node(1);
+    with_user.user = Some(OsmUser {
+        id: 42,
+        name: "mapper".to_string(),
+    });
+    let without_user = base_node(2);
+    for use_dense in [true, false] {
+        let out = write_and_read_nodes(
+            &format!("user_presence_{}", use_dense),
+            vec![with_user.clone(), without_user.clone()],
+            use_dense,
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!(
+            out[0].user,
+            Some(OsmUser {
+                id: 42,
+                name: "mapper".to_string()
+            }),
+            "user must survive roundtrip (dense={})",
+            use_dense
+        );
+        assert!(
+            out[1].user.is_none(),
+            "userless element must read back as no user (dense={})",
+            use_dense
+        );
+    }
+}
+
+#[test]
+fn par_find_matches_sequential_read() {
+    // Regression guard for the par_find pipeline: parallel filtering must return exactly the
+    // same elements as a sequential read on the committed fixture.
+    let file = "resources/andorra-latest.osm.pbf";
+    let mut reader = PbfReader::from_path(file).unwrap();
+    let mut seq_nodes = 0usize;
+    let mut seq_ways = 0usize;
+    reader
+        .read(|_, el| match el {
+            Some(Element::Node(n)) => {
+                if n.id % 1000 == 0 {
+                    seq_nodes += 1;
+                }
+            }
+            Some(Element::Way(w)) => {
+                if w.tags.iter().any(|t| t.key == "highway") {
+                    seq_ways += 1;
+                }
+            }
+            _ => {}
+        })
+        .unwrap();
+
+    let reader = PbfReader::from_path(file).unwrap();
+    let found = reader
+        .par_find(None, |el| match el {
+            Element::Node(n) => n.id % 1000 == 0,
+            Element::Way(w) => w.tags.iter().any(|t| t.key == "highway"),
+            _ => false,
+        })
+        .unwrap();
+    assert_eq!(
+        found
+            .iter()
+            .filter(|e| matches!(e, Element::Node(_)))
+            .count(),
+        seq_nodes,
+        "par_find node count must match sequential read"
+    );
+    assert_eq!(
+        found
+            .iter()
+            .filter(|e| matches!(e, Element::Way(_)))
+            .count(),
+        seq_ways,
+        "par_find way count must match sequential read"
+    );
+}

@@ -36,17 +36,24 @@ pub struct DiffCommand {
 }
 
 impl DiffCommand {
-    pub fn run(self) {
-        let mut diff_csv =
-            csv::WriterBuilder::new().from_writer(File::create(&self.output).unwrap());
+    pub fn run(self) -> anyhow::Result<()> {
+        let mut diff_csv = csv::WriterBuilder::new().from_writer(File::create(&self.output)?);
 
-        let mut source = IterableReader::from_path(&self.source)
-            .unwrap_or_else(|_| panic!("No such file: {}", self.source));
-        let mut target = IterableReader::from_path(&self.target)
-            .unwrap_or_else(|_| panic!("No such file: {}", self.target));
+        let mut source = IterableReader::from_path(&self.source)?;
+        let mut target = IterableReader::from_path(&self.target)?;
 
         let mut source_element_cnt = source.next();
         let mut target_element_cnt = target.next();
+
+        macro_rules! record {
+            ($element_type:expr, $element_id:expr, $diff_type:expr) => {
+                diff_csv.serialize(ElementDiff {
+                    element_type: $element_type,
+                    element_id: $element_id,
+                    diff_type: $diff_type,
+                })?
+            };
+        }
 
         loop {
             match (&source_element_cnt, &target_element_cnt) {
@@ -55,191 +62,94 @@ impl DiffCommand {
                         (Element::Node(source_element), Element::Node(target_element)) => {
                             if source_element.id == target_element.id {
                                 if source_element != target_element {
-                                    diff_csv
-                                        .serialize(ElementDiff {
-                                            element_type: ElementType::Node,
-                                            element_id: source_element.id,
-                                            diff_type: DiffType::Modify,
-                                        })
-                                        .unwrap();
+                                    record!(ElementType::Node, source_element.id, DiffType::Modify);
                                 }
                                 source_element_cnt = source.next();
                                 target_element_cnt = target.next();
                             } else if source_element.id < target_element.id {
-                                diff_csv
-                                    .serialize(ElementDiff {
-                                        element_type: ElementType::Node,
-                                        element_id: source_element.id,
-                                        diff_type: DiffType::Delete,
-                                    })
-                                    .unwrap();
+                                record!(ElementType::Node, source_element.id, DiffType::Delete);
                                 source_element_cnt = source.next();
                             } else {
-                                diff_csv
-                                    .serialize(ElementDiff {
-                                        element_type: ElementType::Node,
-                                        element_id: target_element.id,
-                                        diff_type: DiffType::Add,
-                                    })
-                                    .unwrap();
+                                record!(ElementType::Node, target_element.id, DiffType::Add);
                                 target_element_cnt = target.next();
                             }
                         }
                         (Element::Node(source_element), Element::Way(_)) => {
-                            diff_csv
-                                .serialize(ElementDiff {
-                                    element_type: ElementType::Node,
-                                    element_id: source_element.id,
-                                    diff_type: DiffType::Delete,
-                                })
-                                .unwrap();
+                            record!(ElementType::Node, source_element.id, DiffType::Delete);
                             source_element_cnt = source.next();
                         }
                         (Element::Way(_), Element::Node(target_element)) => {
-                            diff_csv
-                                .serialize(ElementDiff {
-                                    element_type: ElementType::Node,
-                                    element_id: target_element.id,
-                                    diff_type: DiffType::Add,
-                                })
-                                .unwrap();
+                            record!(ElementType::Node, target_element.id, DiffType::Add);
                             target_element_cnt = target.next();
                         }
                         (Element::Way(source_element), Element::Way(target_element)) => {
                             if source_element.id == target_element.id {
                                 if source_element != target_element {
-                                    diff_csv
-                                        .serialize(ElementDiff {
-                                            element_type: ElementType::Way,
-                                            element_id: source_element.id,
-                                            diff_type: DiffType::Modify,
-                                        })
-                                        .unwrap();
+                                    record!(ElementType::Way, source_element.id, DiffType::Modify);
                                 }
                                 source_element_cnt = source.next();
                                 target_element_cnt = target.next();
                             } else if source_element.id < target_element.id {
-                                diff_csv
-                                    .serialize(ElementDiff {
-                                        element_type: ElementType::Way,
-                                        element_id: source_element.id,
-                                        diff_type: DiffType::Delete,
-                                    })
-                                    .unwrap();
+                                record!(ElementType::Way, source_element.id, DiffType::Delete);
                                 source_element_cnt = source.next();
                             } else {
-                                diff_csv
-                                    .serialize(ElementDiff {
-                                        element_type: ElementType::Way,
-                                        element_id: target_element.id,
-                                        diff_type: DiffType::Add,
-                                    })
-                                    .unwrap();
+                                record!(ElementType::Way, target_element.id, DiffType::Add);
                                 target_element_cnt = target.next();
                             }
                         }
                         (Element::Way(source_way), Element::Relation(_)) => {
-                            diff_csv
-                                .serialize(ElementDiff {
-                                    element_type: ElementType::Way,
-                                    element_id: source_way.id,
-                                    diff_type: DiffType::Delete,
-                                })
-                                .unwrap();
+                            record!(ElementType::Way, source_way.id, DiffType::Delete);
                             source_element_cnt = source.next();
                         }
                         (Element::Relation(_), Element::Way(target_way)) => {
-                            diff_csv
-                                .serialize(ElementDiff {
-                                    element_type: ElementType::Way,
-                                    element_id: target_way.id,
-                                    diff_type: DiffType::Add,
-                                })
-                                .unwrap();
+                            record!(ElementType::Way, target_way.id, DiffType::Add);
                             target_element_cnt = target.next();
                         }
                         (Element::Relation(source_element), Element::Relation(target_element)) => {
                             if source_element.id == target_element.id {
                                 if source_element != target_element {
-                                    diff_csv
-                                        .serialize(ElementDiff {
-                                            element_type: ElementType::Relation,
-                                            element_id: source_element.id,
-                                            diff_type: DiffType::Modify,
-                                        })
-                                        .unwrap();
+                                    record!(
+                                        ElementType::Relation,
+                                        source_element.id,
+                                        DiffType::Modify
+                                    );
                                 }
                                 source_element_cnt = source.next();
                                 target_element_cnt = target.next();
                             } else if source_element.id < target_element.id {
-                                diff_csv
-                                    .serialize(ElementDiff {
-                                        element_type: ElementType::Relation,
-                                        element_id: source_element.id,
-                                        diff_type: DiffType::Delete,
-                                    })
-                                    .unwrap();
+                                record!(ElementType::Relation, source_element.id, DiffType::Delete);
                                 source_element_cnt = source.next();
                             } else {
-                                diff_csv
-                                    .serialize(ElementDiff {
-                                        element_type: ElementType::Relation,
-                                        element_id: target_element.id,
-                                        diff_type: DiffType::Add,
-                                    })
-                                    .unwrap();
+                                record!(ElementType::Relation, target_element.id, DiffType::Add);
                                 target_element_cnt = target.next();
                             }
                         }
                         (Element::Relation(_), Element::Node(target_node)) => {
-                            diff_csv
-                                .serialize(ElementDiff {
-                                    element_type: ElementType::Node,
-                                    element_id: target_node.id,
-                                    diff_type: DiffType::Add,
-                                })
-                                .unwrap();
+                            record!(ElementType::Node, target_node.id, DiffType::Add);
                             target_element_cnt = target.next();
                         }
                         (Element::Node(source_node), Element::Relation(_)) => {
-                            diff_csv
-                                .serialize(ElementDiff {
-                                    element_type: ElementType::Node,
-                                    element_id: source_node.id,
-                                    diff_type: DiffType::Delete,
-                                })
-                                .unwrap();
+                            record!(ElementType::Node, source_node.id, DiffType::Delete);
                             source_element_cnt = source.next();
                         }
                     }
                 }
                 (Some(source_element), None) => {
                     let (element_type, element_id) = source_element.get_meta();
-                    diff_csv
-                        .serialize(ElementDiff {
-                            element_type,
-                            element_id,
-                            diff_type: DiffType::Delete,
-                        })
-                        .unwrap();
+                    record!(element_type, element_id, DiffType::Delete);
                     source_element_cnt = source.next();
                 }
                 (None, Some(target_element)) => {
                     let (element_type, element_id) = target_element.get_meta();
-                    diff_csv
-                        .serialize(ElementDiff {
-                            element_type,
-                            element_id,
-                            diff_type: DiffType::Add,
-                        })
-                        .unwrap();
+                    record!(element_type, element_id, DiffType::Add);
                     target_element_cnt = target.next();
                 }
                 (None, None) => break,
             }
         }
 
-        diff_csv.flush().unwrap();
+        diff_csv.flush()?;
         println!("Diff file created: ./{}", &self.output);
+        Ok(())
     }
 }

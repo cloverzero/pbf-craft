@@ -48,33 +48,48 @@ impl<R: Read + Send> PbfReader<R> {
         }
     }
 
-    pub fn read_next_blob(&mut self) -> Option<BlobData> {
+    /// Reads and decodes the next blob, returning its elements.
+    ///
+    /// Returns `Ok(None)` at a clean end of stream and `Err` on any malformed or truncated
+    /// input (headers are validated for supported required features, blocks for structural
+    /// consistency).
+    pub fn read_next_blob(&mut self) -> anyhow::Result<Option<BlobData>> {
         if self.blob_reader.eof {
-            None
-        } else {
-            let offset = self.blob_reader.offset;
-            match self.blob_reader.next() {
-                Some(blob) => match blob.decode().expect("Failed to decode block.") {
-                    DecodedBlob::OsmHeader(_) => Some(BlobData {
-                        nodes: Vec::with_capacity(0),
-                        ways: Vec::with_capacity(0),
-                        relations: Vec::with_capacity(0),
-                        offset,
-                    }),
-                    DecodedBlob::OsmData(data) => {
-                        let decorator = PrimitiveReader::new(data);
-                        let (nodes, ways, relations) = decorator.get_all_elements();
-
-                        Some(BlobData {
+            return Ok(None);
+        }
+        let offset = self.blob_reader.offset;
+        match self.blob_reader.next_blob()? {
+            Some(blob) => {
+                let data = match blob.decode()? {
+                    Some(DecodedBlob::OsmHeader(header)) => {
+                        HeaderReader::new(header).validate_features()?;
+                        BlobData {
+                            nodes: Vec::with_capacity(0),
+                            ways: Vec::with_capacity(0),
+                            relations: Vec::with_capacity(0),
+                            offset,
+                        }
+                    }
+                    Some(DecodedBlob::OsmData(data)) => {
+                        let decorator = PrimitiveReader::new(data)?;
+                        let (nodes, ways, relations) = decorator.get_all_elements()?;
+                        BlobData {
                             nodes,
                             ways,
                             relations,
                             offset,
-                        })
+                        }
                     }
-                },
-                None => None,
+                    None => BlobData {
+                        nodes: Vec::with_capacity(0),
+                        ways: Vec::with_capacity(0),
+                        relations: Vec::with_capacity(0),
+                        offset,
+                    },
+                };
+                Ok(Some(data))
             }
+            None => Ok(None),
         }
     }
 
@@ -92,7 +107,7 @@ impl<R: Read + Send> PbfReader<R> {
     /// # Returns
     ///
     /// * `anyhow::Result<()>` - Returns an Ok result if all blobs are processed successfully,
-    ///   or an error if any blob decoding fails.
+    ///   or an error if any blob decoding fails (including unsupported required features).
     ///
     /// # Errors
     ///
@@ -117,16 +132,18 @@ impl<R: Read + Send> PbfReader<R> {
     where
         F: FnMut(Option<HeaderReader>, Option<Element>),
     {
-        for blob in &mut self.blob_reader {
+        while let Some(blob) = self.blob_reader.next_blob()? {
             match blob.decode()? {
-                DecodedBlob::OsmHeader(b) => {
+                Some(DecodedBlob::OsmHeader(b)) => {
                     let header_reader = HeaderReader::new(b);
+                    header_reader.validate_features()?;
                     callback(Some(header_reader), None);
                 }
-                DecodedBlob::OsmData(data) => {
-                    let decorator = PrimitiveReader::new(data);
-                    decorator.for_each_element(|el| callback(None, Some(el)));
+                Some(DecodedBlob::OsmData(data)) => {
+                    let decorator = PrimitiveReader::new(data)?;
+                    decorator.for_each_element(|el| callback(None, Some(el)))?;
                 }
+                None => {}
             }
         }
         Ok(())
@@ -170,66 +187,73 @@ impl<R: Read + Send> PbfReader<R> {
     where
         F: Fn(&Element) -> bool + Send + Sync,
     {
+        // Single streaming pipeline: `par_bridge` pulls one blob per worker at a time, each
+        // blob is decoded, filtered and merged incrementally, so memory stays bounded by the
+        // worker count plus the final result — collecting all decoded blocks up front would
+        // hold the whole (planet-sized) file's uncompressed data in memory. Decode errors
+        // flow through the Result items and the reduce instead of panicking.
         let result = self
             .blob_reader
             .par_bridge()
-            .filter_map(
-                |blob| match blob.decode().expect("decode raw blob failed.") {
-                    DecodedBlob::OsmHeader(_) => None,
-                    DecodedBlob::OsmData(b) => Some(PrimitiveReader::new(b)),
-                },
-            )
-            .filter_map(|p| {
+            .map(|blob| -> anyhow::Result<Vec<Element>> {
+                let decoded = match blob?.decode()? {
+                    Some(DecodedBlob::OsmData(b)) => Some(PrimitiveReader::new(b)?),
+                    _ => None,
+                };
+                let Some(p) = decoded else {
+                    return Ok(Vec::new());
+                };
                 if let Some(element_type) = inclination {
                     let result = match element_type {
                         ElementType::Node => p
-                            .get_nodes()
+                            .get_nodes()?
                             .into_iter()
                             .map(Element::Node)
                             .filter(&callback)
                             .collect::<Vec<Element>>(),
                         ElementType::Way => p
-                            .get_ways()
+                            .get_ways()?
                             .into_iter()
                             .map(Element::Way)
                             .filter(&callback)
                             .collect::<Vec<Element>>(),
                         ElementType::Relation => p
-                            .get_relations()
+                            .get_relations()?
                             .into_iter()
                             .map(Element::Relation)
                             .filter(&callback)
                             .collect::<Vec<Element>>(),
                     };
-                    Some(result)
+                    Ok(result)
                 } else {
-                    let (nodes, ways, relations) = p.get_all_elements();
-                    let mut filterd_nodes: Vec<Element> = nodes
+                    let (nodes, ways, relations) = p.get_all_elements()?;
+                    let mut result: Vec<Element> = nodes
                         .into_iter()
                         .map(Element::Node)
                         .filter(&callback)
                         .collect();
-                    let mut filterd_ways: Vec<Element> = ways
-                        .into_iter()
-                        .map(Element::Way)
-                        .filter(&callback)
-                        .collect();
-                    let mut filterd_relations: Vec<Element> = relations
-                        .into_iter()
-                        .map(Element::Relation)
-                        .filter(&callback)
-                        .collect();
-
-                    filterd_nodes.append(&mut filterd_ways);
-                    filterd_nodes.append(&mut filterd_relations);
-                    Some(filterd_nodes)
+                    result.extend(ways.into_iter().map(Element::Way).filter(&callback));
+                    result.extend(
+                        relations
+                            .into_iter()
+                            .map(Element::Relation)
+                            .filter(&callback),
+                    );
+                    Ok(result)
                 }
             })
-            .reduce(Vec::new, |mut a, mut b| {
-                a.append(&mut b);
-                a
-            });
-
+            .reduce(
+                || Ok(Vec::new()),
+                |acc: anyhow::Result<Vec<Element>>, item: anyhow::Result<Vec<Element>>| match (
+                    acc, item,
+                ) {
+                    (Ok(mut a), Ok(b)) => {
+                        a.extend(b);
+                        Ok(a)
+                    }
+                    (Err(e), _) | (_, Err(e)) => Err(e),
+                },
+            )?;
         Ok(result)
     }
 }
@@ -252,39 +276,8 @@ impl PbfRandomRead for PbfReader<BufReader<File>> {
     fn read_blob_by_offset(&mut self, offset: u64) -> anyhow::Result<Rc<BlobData>> {
         self.blob_reader.seek(offset)?;
         let data = self
-            .read_next_blob()
+            .read_next_blob()?
             .ok_or(anyhow!("no blob data found."))?;
         Ok(Rc::new(data))
     }
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use test::Bencher;
-//
-//     #[bench]
-//     fn bench_read(b: &mut Bencher) {
-//         b.iter(|| {
-//             let mut reader = PbfReader::from_path("./tests/andorra-latest.osm.pbf").unwrap();
-//             let _ = reader.read(|el| {});
-//         });
-//     }
-//
-//     #[bench]
-//     fn bench_par_read(b: &mut Bencher) {
-//         b.iter(|| {
-//             let reader = PbfReader::from_path("./tests/andorra-latest.osm.pbf").unwrap();
-//             let (tx, rx) = mpsc::channel();
-//             reader.par_read(tx);
-//             loop {
-//                 match rx.recv().expect("error") {
-//                     None => break,
-//                     Some(el) => {
-//                         // println!("{:?}", el);
-//                     }
-//                 }
-//             }
-//         });
-//     }
-// }

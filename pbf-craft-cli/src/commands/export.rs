@@ -31,12 +31,12 @@ pub struct ExportCommand {
 }
 
 impl ExportCommand {
-    pub fn run(self) {
+    pub fn run(self) -> anyhow::Result<()> {
+        // Note: the password is deliberately not printed.
         blue!("Exporting ");
         dark_yellow!(
-            "postgres://{}:{}@{}:{}/{}",
+            "postgres://{}@{}:{}/{}",
             &self.user,
-            &self.password,
             &self.host,
             &self.port,
             &self.dbname
@@ -47,10 +47,9 @@ impl ExportCommand {
 
         let db_reader =
             DatabaseReader::new(self.host, self.port, self.dbname, self.user, self.password);
-        let mut writer = PbfWriter::from_path(&self.output, true).unwrap();
-        db_reader
-            .read(|el_container| writer.write(el_container).expect("write error"))
-            .expect("read failed");
-        writer.finish().expect("finished error");
+        let mut writer = PbfWriter::from_path(&self.output, true)?;
+        db_reader.read(|el_container| writer.write(el_container))?;
+        writer.finish()?;
+        Ok(())
     }
 }

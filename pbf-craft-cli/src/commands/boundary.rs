@@ -12,12 +12,11 @@ pub struct BoundaryCommand {
 }
 
 impl BoundaryCommand {
-    pub fn run(self) {
-        let mut reader = PbfReader::from_path(&self.file)
-            .unwrap_or_else(|_| panic!("No such file: {}", self.file));
+    pub fn run(self) -> anyhow::Result<()> {
+        let mut reader = PbfReader::from_path(&self.file)?;
 
         let mut polygons: Vec<Polygon> = Vec::new();
-        while let Some(blob_data) = reader.read_next_blob() {
+        while let Some(blob_data) = reader.read_next_blob()? {
             if !blob_data.nodes.is_empty() {
                 let points: Vec<geo::Point> = blob_data
                     .nodes
@@ -38,5 +37,6 @@ impl BoundaryCommand {
         let geojson = Value::from(&geometry);
         dark_yellow_ln!("---------");
         println!("{}", geojson);
+        Ok(())
     }
 }

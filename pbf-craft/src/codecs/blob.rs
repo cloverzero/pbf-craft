@@ -7,6 +7,12 @@ use flate2::read::ZlibDecoder;
 use crate::proto::fileformat::{Blob, BlobHeader};
 use crate::proto::osmformat::{HeaderBlock, PrimitiveBlock};
 
+/// Upper bound for a serialized BlobHeader (matches osmosis's FileBlockHead limit of 64 KiB).
+const MAX_HEADER_SIZE: u64 = 65536;
+/// Upper bound for a compressed blob body (matches osmosis's FileBlockHead limit of 32 MiB).
+/// Bounds memory allocations from untrusted datasize fields.
+const MAX_BLOB_SIZE: usize = 33554432;
+
 pub enum DecodedBlob {
     OsmHeader(HeaderBlock),
     OsmData(PrimitiveBlock),
@@ -19,11 +25,14 @@ pub struct RawBlob {
 }
 
 impl RawBlob {
-    pub fn decode(&self) -> anyhow::Result<DecodedBlob> {
+    /// Decodes the blob into an OSM header or data block. Returns `Ok(None)` for blob types
+    /// this crate does not know about (they are skipped, like osmosis does) and `Err` for
+    /// known types whose contents fail to decode.
+    pub fn decode(&self) -> anyhow::Result<Option<DecodedBlob>> {
         let decoded = match self.header.get_field_type() {
-            "OSMHeader" => DecodedBlob::OsmHeader(self.decode_blob()?),
-            "OSMData" => DecodedBlob::OsmData(self.decode_blob()?),
-            _ => bail!("Unsupported header type: {}", self.header.get_field_type()),
+            "OSMHeader" => Some(DecodedBlob::OsmHeader(self.decode_blob()?)),
+            "OSMData" => Some(DecodedBlob::OsmData(self.decode_blob()?)),
+            _ => None,
         };
         Ok(decoded)
     }
@@ -57,7 +66,7 @@ impl<R: Read + Send> BlobReader<R> {
         }
     }
 
-    fn next_blob(&mut self) -> anyhow::Result<Option<RawBlob>> {
+    pub(crate) fn next_blob(&mut self) -> anyhow::Result<Option<RawBlob>> {
         let header_size = match self.reader.read_u32::<byteorder::BigEndian>() {
             Ok(n) => {
                 self.offset += 4;
@@ -78,6 +87,13 @@ impl<R: Read + Send> BlobReader<R> {
     }
 
     fn read_blob_header(&mut self, header_size: u64) -> anyhow::Result<BlobHeader> {
+        if header_size > MAX_HEADER_SIZE {
+            bail!(
+                "Unexpectedly long blob header ({} bytes, limit {}). Possibly corrupt file.",
+                header_size,
+                MAX_HEADER_SIZE
+            );
+        }
         let header: BlobHeader =
             protobuf::Message::parse_from_reader(&mut self.reader.by_ref().take(header_size))?;
         self.offset += header_size;
@@ -86,15 +102,17 @@ impl<R: Read + Send> BlobReader<R> {
 
     fn read_blob(&mut self, header: &BlobHeader) -> anyhow::Result<Vec<u8>> {
         let data_size = header.get_datasize() as usize;
-        let mut bytes: Vec<u8> = Vec::with_capacity(data_size);
-        let mut r = self.reader.by_ref().take(data_size as u64);
-        match r.read_to_end(&mut bytes) {
-            Ok(_) => {
-                self.offset += data_size as u64;
-                Ok(bytes)
-            }
-            Err(e) => bail!(e),
+        if data_size > MAX_BLOB_SIZE {
+            bail!(
+                "Unexpectedly long blob body ({} bytes, limit {}). Possibly corrupt file.",
+                data_size,
+                MAX_BLOB_SIZE
+            );
         }
+        let mut bytes = vec![0u8; data_size];
+        self.reader.by_ref().read_exact(&mut bytes)?;
+        self.offset += data_size as u64;
+        Ok(bytes)
     }
 }
 
@@ -113,16 +131,21 @@ impl BlobReader<BufReader<File>> {
 }
 
 impl<R: Read + Send> Iterator for BlobReader<R> {
-    type Item = RawBlob;
+    /// A convenience iterator over blobs. I/O or decode-framing errors are yielded as `Err`
+    /// items instead of panicking, so `par_bridge`-style consumers can propagate them.
+    /// Prefer `next_blob()` when you need the error without ending iteration on it.
+    type Item = anyhow::Result<RawBlob>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.eof {
             None
         } else {
             match self.next_blob() {
-                Ok(raw) => raw,
+                Ok(Some(raw)) => Some(Ok(raw)),
+                Ok(None) => None,
                 Err(err) => {
-                    panic!("{}", err);
+                    self.eof = true;
+                    Some(Err(err))
                 }
             }
         }

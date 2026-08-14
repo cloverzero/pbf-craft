@@ -106,10 +106,12 @@ impl PrimitiveBuilder {
                 dense_info.user_sid.push(user_sid - previous_sid);
                 (user.id, user_sid)
             } else {
-                dense_info.uid.push(0 - previous_uid);
+                // No user: accumulate the uid to -1 (osmosis convention) so readers map the
+                // accumulated value to "no user" instead of a phantom uid-0 user.
+                dense_info.uid.push(-1 - previous_uid);
                 let user_sid = self.string_table.add("".to_string());
                 dense_info.user_sid.push(user_sid - previous_sid);
-                (0, user_sid)
+                (-1, user_sid)
             };
 
             for tag in node.tags {
@@ -162,9 +164,8 @@ impl PrimitiveBuilder {
                     let sid = self.string_table.add(user.name);
                     info.set_user_sid(sid as u32);
                 } else {
-                    info.set_uid(0);
-                    let sid = self.string_table.add("".to_string());
-                    info.set_user_sid(sid as u32);
+                    // No user: omit uid/user_sid entirely so readers map the element to
+                    // "no user" (osmosis convention) instead of a phantom uid-0 user.
                 }
                 // Without this the Info is dropped and sparse nodes lose ALL metadata
                 // (version, timestamp, changeset, user, visible) on the read side.
@@ -224,9 +225,8 @@ impl PrimitiveBuilder {
                     let sid = self.string_table.add(user.name);
                     info.set_user_sid(sid as u32);
                 } else {
-                    info.set_uid(0);
-                    let sid = self.string_table.add("".to_string());
-                    info.set_user_sid(sid as u32);
+                    // No user: omit uid/user_sid entirely so readers map the element to
+                    // "no user" (osmosis convention) instead of a phantom uid-0 user.
                 }
                 osm_way.set_info(info);
 
@@ -280,9 +280,8 @@ impl PrimitiveBuilder {
                     let sid = self.string_table.add(user.name);
                     info.set_user_sid(sid as u32);
                 } else {
-                    info.set_uid(0);
-                    let sid = self.string_table.add("".to_string());
-                    info.set_user_sid(sid as u32);
+                    // No user: omit uid/user_sid entirely so readers map the element to
+                    // "no user" (osmosis convention) instead of a phantom uid-0 user.
                 }
                 osm_relation.set_info(info);
 
