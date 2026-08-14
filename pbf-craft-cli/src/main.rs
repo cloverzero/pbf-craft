@@ -24,7 +24,7 @@ fn main() -> anyhow::Result<()> {
     let start = Instant::now();
 
     let cli = Cli::parse();
-    cli.command.run();
+    cli.command.run()?;
 
     let end = Instant::now();
     green!("Finished ");

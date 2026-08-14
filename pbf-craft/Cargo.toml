@@ -1,6 +1,6 @@
 [package]
 name = "pbf-craft"
-version = "0.10.0"
+version = "1.0.0"
 edition = "2021"
 authors = ["Lurker <cloverzero@gmail.com>"]
 repository = "https://github.com/cloverzero/pbf-craft"
@@ -15,16 +15,16 @@ exclude = ["resources"]
 
 [dependencies]
 anyhow = { version = "1.0", features = ["backtrace"] }
-base16ct = "0.2.0"
 byteorder = "1"
 chrono = { version = "0.4", features = ["serde"] }
 flate2 = "1.0"
-md-5 = "0.10.5"
+lz4_flex = "0.11"
 protobuf = "2"
 quick_cache = "0.6"
 rayon = "1"
 serde = { version = "1.0.142", features = ["derive"] }
 serde_json = "1.0.83"
+zstd = "0.13"
 
 [build-dependencies]
 protobuf-codegen-pure = "2"

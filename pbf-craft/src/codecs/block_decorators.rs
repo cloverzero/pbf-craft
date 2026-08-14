@@ -8,6 +8,18 @@ use crate::models::{
 use crate::proto::osmformat;
 use crate::proto::osmformat::Relation_MemberType;
 
+/// The PBF required features this crate can decode. Mirrors osmosis's supported set, plus
+/// HistoricalInformation (the decoder reads the visible flag) and the two sorting
+/// declarations: sequential reading does not depend on element order, and `IndexedReader`
+/// validates order on the actual data rather than trusting the declaration.
+const SUPPORTED_FEATURES: &[&str] = &[
+    "OsmSchema-V0.6",
+    "DenseNodes",
+    "HistoricalInformation",
+    "Sort.Type_then_ID",
+    "Sort.Geographic",
+];
+
 pub struct HeaderReader {
     header: osmformat::HeaderBlock,
 }
@@ -17,22 +29,35 @@ impl HeaderReader {
         Self { header }
     }
 
-    pub fn meta(&self) -> HashMap<String, String> {
-        let supported_features: Vec<&str> = vec!["OsmSchema-V0.6", "DenseNodes"];
-        let mut unsupported: Vec<String> = Vec::new();
-        for feature in self.header.get_required_features() {
-            if !supported_features.contains(&&feature[..]) {
-                unsupported.push(feature.to_owned());
-            }
-        }
+    /// The required features declared by the file's header block.
+    pub fn required_features(&self) -> Vec<String> {
+        self.header.get_required_features().to_vec()
+    }
+
+    /// Validates that every required feature is supported. Called eagerly when the header
+    /// block is read so a file we cannot interpret correctly fails loudly instead of silently
+    /// returning wrong data.
+    pub fn validate_features(&self) -> anyhow::Result<()> {
+        let unsupported: Vec<&str> = self
+            .header
+            .get_required_features()
+            .iter()
+            .filter(|feature| !SUPPORTED_FEATURES.contains(&feature.as_str()))
+            .map(|feature| feature.as_str())
+            .collect();
         if !unsupported.is_empty() {
-            panic!(
+            bail!(
                 "PBF file contains unsupported features: {}",
                 unsupported.join(", ")
             );
         }
-        let mut meta: HashMap<String, String> = HashMap::new();
+        Ok(())
+    }
 
+    /// Pipeline metadata derived from the header (does not validate features; call
+    /// `validate_features` on the read path).
+    pub fn meta(&self) -> HashMap<String, String> {
+        let mut meta: HashMap<String, String> = HashMap::new();
         let optional_features = self.header.get_optional_features();
         if optional_features.contains(&"LocationsOnWays".to_string()) {
             meta.insert("way_node.location_included".to_string(), "true".to_string());
@@ -67,101 +92,91 @@ pub struct PrimitiveReader {
 }
 
 impl PrimitiveReader {
-    pub fn new(block: osmformat::PrimitiveBlock) -> Self {
-        Self {
-            decoder: FieldCodec::new_with_block(&block),
+    pub fn new(block: osmformat::PrimitiveBlock) -> anyhow::Result<Self> {
+        Ok(Self {
+            decoder: FieldCodec::new_with_block(&block)?,
             block,
-        }
+        })
     }
 
-    pub fn get_nodes(&self) -> Vec<Node> {
+    pub fn get_nodes(&self) -> anyhow::Result<Vec<Node>> {
         let mut nodes: Vec<Node> = Vec::new();
         for group in self.block.get_primitivegroup() {
             if group.has_dense() {
-                let mut gdn = self.process_dense(group.get_dense());
-                nodes.append(&mut gdn);
+                nodes.append(&mut self.process_dense(group.get_dense())?);
             }
-            let mut gn = self.process_nodes(group.get_nodes());
-            nodes.append(&mut gn);
+            nodes.append(&mut self.process_nodes(group.get_nodes())?);
         }
-        nodes
+        Ok(nodes)
     }
 
-    pub fn get_ways(&self) -> Vec<Way> {
+    pub fn get_ways(&self) -> anyhow::Result<Vec<Way>> {
         let mut ways: Vec<Way> = Vec::new();
         for group in self.block.get_primitivegroup() {
-            let mut gw = self.process_ways(group.get_ways());
-            ways.append(&mut gw);
+            ways.append(&mut self.process_ways(group.get_ways())?);
         }
-        ways
+        Ok(ways)
     }
 
-    pub fn get_relations(&self) -> Vec<Relation> {
+    pub fn get_relations(&self) -> anyhow::Result<Vec<Relation>> {
         let mut relations: Vec<Relation> = Vec::new();
         for group in self.block.get_primitivegroup() {
-            let mut gr = self.process_relations(group.get_relations());
-            relations.append(&mut gr);
+            relations.append(&mut self.process_relations(group.get_relations())?);
         }
-        relations
+        Ok(relations)
     }
 
-    pub fn get_all_elements(&self) -> (Vec<Node>, Vec<Way>, Vec<Relation>) {
+    pub fn get_all_elements(&self) -> anyhow::Result<(Vec<Node>, Vec<Way>, Vec<Relation>)> {
         let mut nodes: Vec<Node> = Vec::new();
         let mut ways: Vec<Way> = Vec::new();
         let mut relations: Vec<Relation> = Vec::new();
 
         for group in self.block.get_primitivegroup() {
             if group.has_dense() {
-                let mut gdn = self.process_dense(group.get_dense());
-                nodes.append(&mut gdn);
+                nodes.append(&mut self.process_dense(group.get_dense())?);
             }
-            let mut gn = self.process_nodes(group.get_nodes());
-            nodes.append(&mut gn);
-
-            let mut gw = self.process_ways(group.get_ways());
-            ways.append(&mut gw);
-
-            let mut gr = self.process_relations(group.get_relations());
-            relations.append(&mut gr);
+            nodes.append(&mut self.process_nodes(group.get_nodes())?);
+            ways.append(&mut self.process_ways(group.get_ways())?);
+            relations.append(&mut self.process_relations(group.get_relations())?);
         }
 
-        (nodes, ways, relations)
+        Ok((nodes, ways, relations))
     }
 
-    pub fn for_each_element<F: FnMut(Element)>(&self, mut callback: F) {
+    pub fn for_each_element<F: FnMut(Element)>(&self, mut callback: F) -> anyhow::Result<()> {
         for group in self.block.get_primitivegroup() {
             if group.has_dense() {
-                let nodes = self.process_dense(group.get_dense());
-                for node in nodes {
+                for node in self.process_dense(group.get_dense())? {
                     callback(Element::Node(node));
                 }
             }
-            let nodes = self.process_nodes(group.get_nodes());
-            for node in nodes {
+            for node in self.process_nodes(group.get_nodes())? {
                 callback(Element::Node(node));
             }
-
-            let ways = self.process_ways(group.get_ways());
-            for way in ways {
+            for way in self.process_ways(group.get_ways())? {
                 callback(Element::Way(way));
             }
-
-            let relations = self.process_relations(group.get_relations());
-            for relation in relations {
+            for relation in self.process_relations(group.get_relations())? {
                 callback(Element::Relation(relation));
             }
         }
+        Ok(())
     }
 
-    fn process_dense(&self, dense: &osmformat::DenseNodes) -> Vec<Node> {
-        let mut dense_info_iter = DenseInfoIterator::new(dense.get_denseinfo());
+    fn process_dense(&self, dense: &osmformat::DenseNodes) -> anyhow::Result<Vec<Node>> {
+        let node_count = dense.id.len();
+        let mut dense_info_iter = DenseInfoIterator::new(dense.get_denseinfo(), node_count);
         let mut id_iter = dense.get_id().iter();
         let mut lat_iter = dense.get_lat().iter();
         let mut lon_iter = dense.get_lon().iter();
 
         let mut kv_iter = dense.get_keys_vals().iter();
 
-        let mut result = Vec::with_capacity(dense.id.len());
+        let mut result = Vec::with_capacity(node_count);
+        // DenseInfo timestamp/changeset/uid/user_sid columns are parallel arrays: either the
+        // file carries them for every node or for none. Absent columns mean "no metadata", so
+        // nodes must read back `timestamp: None` rather than the epoch.
+        let has_timestamps = !dense.get_denseinfo().get_timestamp().is_empty();
         let mut node_id: i64 = 0;
         let mut latitude: i64 = 0;
         let mut longitude: i64 = 0;
@@ -179,14 +194,23 @@ impl PrimitiveReader {
                     let mut node = Node {
                         id: node_id,
                         version: info.version,
-                        timestamp: Some(self.decoder.decode_timestamp(info.timestamp)),
+                        timestamp: if has_timestamps {
+                            Some(self.decoder.decode_timestamp(info.timestamp)?)
+                        } else {
+                            None
+                        },
                         changeset_id: info.changeset,
-                        user: Some(OsmUser {
-                            id: info.uid,
-                            name: self.decoder.decode_string(info.user_sid as usize),
-                        }),
-                        latitude: self.decoder.decode_latitude(latitude),
-                        longitude: self.decoder.decode_longitude(longitude),
+                        user: if info.uid >= 0 {
+                            Some(OsmUser {
+                                id: info.uid,
+                                name: self.decoder.decode_string(info.user_sid as usize),
+                            })
+                        } else {
+                            // Negative accumulated uid means "no user" (osmosis convention).
+                            None
+                        },
+                        latitude: self.decoder.decode_latitude(latitude)?,
+                        longitude: self.decoder.decode_longitude(longitude)?,
                         visible: info.visible,
                         tags: Vec::new(),
                     };
@@ -200,8 +224,10 @@ impl PrimitiveReader {
                         };
                         let value_index_op = kv_iter.next();
                         let value = match value_index_op {
-                            None => panic!("The PBF DenseInfo keys/values list contains a key with no corresponding value."),
-                            Some(&value_index) => self.decoder.decode_string(value_index as usize)
+                            None => bail!(
+                                "malformed dense nodes: key without corresponding value in keys_vals"
+                            ),
+                            Some(&value_index) => self.decoder.decode_string(value_index as usize),
                         };
                         node.tags.push(Tag { key, value });
                     }
@@ -209,30 +235,46 @@ impl PrimitiveReader {
                     result.push(node);
                 }
                 (None, None, None, None) => break,
-                _ => {
-                    panic!("dense size error");
-                }
+                _ => bail!("malformed dense nodes: id/lat/lon/denseinfo size mismatch"),
             }
         }
-        result
+        Ok(result)
     }
 
-    fn build_base_element(&self, id: i64, tags: Vec<Tag>, info: &osmformat::Info) -> ElementBase {
-        ElementBase {
+    fn build_base_element(
+        &self,
+        id: i64,
+        tags: Vec<Tag>,
+        info: &osmformat::Info,
+    ) -> anyhow::Result<ElementBase> {
+        Ok(ElementBase {
             id,
             tags,
             version: info.get_version(),
-            timestamp: Some(self.decoder.decode_timestamp(info.get_timestamp())),
+            // An absent timestamp must stay None, not become the epoch.
+            timestamp: if info.has_timestamp() {
+                Some(self.decoder.decode_timestamp(info.get_timestamp())?)
+            } else {
+                None
+            },
             changeset_id: info.get_changeset(),
-            user: Some(OsmUser {
-                id: info.get_uid(),
-                name: self.decoder.decode_string(info.get_user_sid() as usize),
-            }),
-            visible: true,
-        }
+            // A user only exists when both uid and user_sid are present and uid >= 0
+            // (osmosis convention; negative or missing uid means "no user").
+            user: if info.has_uid() && info.has_user_sid() && info.get_uid() >= 0 {
+                Some(OsmUser {
+                    id: info.get_uid(),
+                    name: self.decoder.decode_string(info.get_user_sid() as usize),
+                })
+            } else {
+                None
+            },
+            // The visible flag defaults to true when absent (proto2 get_visible() returns
+            // false for unset optional fields, which would wrongly mark elements deleted).
+            visible: info.has_visible() && info.get_visible(),
+        })
     }
 
-    fn process_tags(&self, keys: &[u32], vals: &[u32]) -> Vec<Tag> {
+    fn process_tags(&self, keys: &[u32], vals: &[u32]) -> anyhow::Result<Vec<Tag>> {
         let mut key_iter = keys.iter();
         let mut val_iter = vals.iter();
         let mut tags: Vec<Tag> = Vec::new();
@@ -244,95 +286,96 @@ impl PrimitiveReader {
                     tags.push(Tag { key, value })
                 }
                 (None, None) => break,
-                _ => panic!("process_nodes key val size error"),
+                _ => bail!("malformed primitive: tag key/value count mismatch"),
             }
         }
-        tags
+        Ok(tags)
     }
 
-    fn process_nodes(&self, nodes: &[osmformat::Node]) -> Vec<Node> {
-        nodes
-            .iter()
-            .map(|elm| {
-                let tags = self.process_tags(elm.get_keys(), elm.get_vals());
-                let base_el = if elm.has_info() {
-                    let info = elm.get_info();
-                    self.build_base_element(elm.get_id(), tags, info)
-                } else {
-                    ElementBase::new_with_tags(elm.get_id(), tags)
-                };
-                let mut node: Node = base_el.into();
-                node.latitude = self.decoder.decode_latitude(elm.get_lat());
-                node.longitude = self.decoder.decode_longitude(elm.get_lon());
-                node
-            })
-            .collect()
+    fn process_nodes(&self, nodes: &[osmformat::Node]) -> anyhow::Result<Vec<Node>> {
+        let mut result = Vec::with_capacity(nodes.len());
+        for elm in nodes {
+            let tags = self.process_tags(elm.get_keys(), elm.get_vals())?;
+            let base_el = if elm.has_info() {
+                let info = elm.get_info();
+                self.build_base_element(elm.get_id(), tags, info)?
+            } else {
+                ElementBase::new_with_tags(elm.get_id(), tags)
+            };
+            let mut node: Node = base_el.into();
+            node.latitude = self.decoder.decode_latitude(elm.get_lat())?;
+            node.longitude = self.decoder.decode_longitude(elm.get_lon())?;
+            result.push(node);
+        }
+        Ok(result)
     }
 
-    fn process_ways(&self, ways: &[osmformat::Way]) -> Vec<Way> {
-        ways.iter()
-            .map(|elm| {
-                let tags = self.process_tags(elm.get_keys(), elm.get_vals());
-                let base_el = if elm.has_info() {
-                    let info = elm.get_info();
-                    self.build_base_element(elm.get_id(), tags, info)
-                } else {
-                    ElementBase::new_with_tags(elm.get_id(), tags)
-                };
-                let mut way: Way = base_el.into();
+    fn process_ways(&self, ways: &[osmformat::Way]) -> anyhow::Result<Vec<Way>> {
+        let mut result = Vec::with_capacity(ways.len());
+        for elm in ways {
+            let tags = self.process_tags(elm.get_keys(), elm.get_vals())?;
+            let base_el = if elm.has_info() {
+                let info = elm.get_info();
+                self.build_base_element(elm.get_id(), tags, info)?
+            } else {
+                ElementBase::new_with_tags(elm.get_id(), tags)
+            };
+            let mut way: Way = base_el.into();
 
-                let mut node_id: i64 = 0;
-                let mut lat: i64 = 0;
-                let mut lon: i64 = 0;
-                let mut ref_iter = elm.get_refs().iter();
-                let mut lat_iter = elm.get_lat().iter();
-                let mut lon_iter = elm.get_lon().iter();
-                loop {
-                    match (ref_iter.next(), lat_iter.next(), lon_iter.next()) {
-                        (Some(&ref_delta), Some(&lat_delta), Some(&lon_delta)) => {
-                            node_id += ref_delta;
-                            lat += lat_delta;
-                            lon += lon_delta;
-                            way.way_nodes.push(WayNode::new(
-                                node_id,
-                                self.decoder.decode_latitude(lat),
-                                self.decoder.decode_longitude(lon),
-                            ));
-                        }
-                        (Some(&ref_delta), None, None) => {
-                            node_id += ref_delta;
-                            way.way_nodes.push(WayNode::new_without_coords(node_id));
-                        }
-                        (None, None, None) => break,
-                        _ => panic!("process_ways refs size error"),
+            let mut node_id: i64 = 0;
+            let mut lat: i64 = 0;
+            let mut lon: i64 = 0;
+            let mut ref_iter = elm.get_refs().iter();
+            let mut lat_iter = elm.get_lat().iter();
+            let mut lon_iter = elm.get_lon().iter();
+            loop {
+                match (ref_iter.next(), lat_iter.next(), lon_iter.next()) {
+                    (Some(&ref_delta), Some(&lat_delta), Some(&lon_delta)) => {
+                        node_id += ref_delta;
+                        lat += lat_delta;
+                        lon += lon_delta;
+                        way.way_nodes.push(WayNode::new(
+                            node_id,
+                            self.decoder.decode_latitude(lat)?,
+                            self.decoder.decode_longitude(lon)?,
+                        ));
                     }
+                    (Some(&ref_delta), None, None) => {
+                        node_id += ref_delta;
+                        way.way_nodes.push(WayNode::new_without_coords(node_id));
+                    }
+                    (None, None, None) => break,
+                    _ => bail!("malformed way: refs/lat/lon size mismatch"),
                 }
+            }
 
-                way
-            })
-            .collect()
+            result.push(way);
+        }
+        Ok(result)
     }
 
-    fn process_relations(&self, relations: &[osmformat::Relation]) -> Vec<Relation> {
-        relations
-            .iter()
-            .map(|elm| {
-                let tags = self.process_tags(elm.get_keys(), elm.get_vals());
-                let base_el = if elm.has_info() {
-                    let info = elm.get_info();
-                    self.build_base_element(elm.get_id(), tags, info)
-                } else {
-                    ElementBase::new_with_tags(elm.get_id(), tags)
-                };
-                let mut relation: Relation = base_el.into();
-                relation.members = self.build_relation_members(
-                    elm.get_memids(),
-                    elm.get_types(),
-                    elm.get_roles_sid(),
-                );
-                relation
-            })
-            .collect()
+    fn process_relations(
+        &self,
+        relations: &[osmformat::Relation],
+    ) -> anyhow::Result<Vec<Relation>> {
+        let mut result = Vec::with_capacity(relations.len());
+        for elm in relations {
+            let tags = self.process_tags(elm.get_keys(), elm.get_vals())?;
+            let base_el = if elm.has_info() {
+                let info = elm.get_info();
+                self.build_base_element(elm.get_id(), tags, info)?
+            } else {
+                ElementBase::new_with_tags(elm.get_id(), tags)
+            };
+            let mut relation: Relation = base_el.into();
+            relation.members = self.build_relation_members(
+                elm.get_memids(),
+                elm.get_types(),
+                elm.get_roles_sid(),
+            )?;
+            result.push(relation);
+        }
+        Ok(result)
     }
 
     fn build_relation_members(
@@ -340,7 +383,7 @@ impl PrimitiveReader {
         member_ids: &[i64],
         member_types: &[Relation_MemberType],
         member_roles: &[i32],
-    ) -> Vec<RelationMember> {
+    ) -> anyhow::Result<Vec<RelationMember>> {
         let mut mid_iter = member_ids.iter();
         let mut role_iter = member_roles.iter();
         let mut type_iter = member_types.iter();
@@ -364,10 +407,10 @@ impl PrimitiveReader {
                     result.push(member);
                 }
                 (None, None, None) => break,
-                _ => panic!("build_relation_members size error"),
+                _ => bail!("malformed relation: memids/types/roles_sid size mismatch"),
             }
         }
-        result
+        Ok(result)
     }
 }
 
@@ -387,6 +430,7 @@ pub struct DenseInfoIterator<'a> {
     uid_iter: std::slice::Iter<'a, i32>,
     user_sid_iter: std::slice::Iter<'a, i32>,
     visible_iter: std::slice::Iter<'a, bool>,
+    remaining: usize,
     timestamp: i64,
     changeset: i64,
     uid: i32,
@@ -394,7 +438,12 @@ pub struct DenseInfoIterator<'a> {
 }
 
 impl<'a> DenseInfoIterator<'a> {
-    fn new(info: &'a osmformat::DenseInfo) -> DenseInfoIterator<'a> {
+    /// Iterates over `node_count` dense nodes. Each DenseInfo column is optional: missing
+    /// columns fall back to their defaults (version -1, timestamp/changeset/uid/user_sid 0,
+    /// visible true — matching osmosis's NOVERSION/NOCHANGESET conventions), so files that
+    /// omit a column (e.g. no timestamps) or omit DenseInfo entirely still decode without
+    /// error.
+    fn new(info: &'a osmformat::DenseInfo, node_count: usize) -> DenseInfoIterator<'a> {
         DenseInfoIterator {
             version_iter: info.get_version().iter(),
             timestamp_iter: info.get_timestamp().iter(),
@@ -402,6 +451,7 @@ impl<'a> DenseInfoIterator<'a> {
             uid_iter: info.get_uid().iter(),
             user_sid_iter: info.get_user_sid().iter(),
             visible_iter: info.get_visible().iter(),
+            remaining: node_count,
             timestamp: 0,
             changeset: 0,
             uid: 0,
@@ -414,36 +464,79 @@ impl<'a> Iterator for DenseInfoIterator<'a> {
     type Item = DenseInfoItem;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match (
-            self.version_iter.next(),
-            self.timestamp_iter.next(),
-            self.changeset_iter.next(),
-            self.uid_iter.next(),
-            self.user_sid_iter.next(),
-            self.visible_iter.next(),
-        ) {
-            (
-                Some(&version),
-                Some(d_timestamp),
-                Some(d_changeset),
-                Some(d_uid),
-                Some(d_user_sid),
-                visible,
-            ) => {
-                self.timestamp += *d_timestamp;
-                self.changeset += *d_changeset;
-                self.uid += *d_uid;
-                self.user_sid += *d_user_sid;
-                Some(DenseInfoItem {
-                    version,
-                    timestamp: self.timestamp,
-                    changeset: self.changeset,
-                    uid: self.uid,
-                    user_sid: self.user_sid,
-                    visible: *visible.unwrap_or(&true),
-                })
-            }
-            _ => None,
+        if self.remaining == 0 {
+            return None;
         }
+        self.remaining -= 1;
+        let version = self.version_iter.next().copied().unwrap_or(-1);
+        let d_timestamp = self.timestamp_iter.next().copied().unwrap_or(0);
+        let d_changeset = self.changeset_iter.next().copied().unwrap_or(0);
+        let d_uid = self.uid_iter.next().copied().unwrap_or(0);
+        let d_user_sid = self.user_sid_iter.next().copied().unwrap_or(0);
+        let visible = self.visible_iter.next().copied().unwrap_or(true);
+
+        self.timestamp += d_timestamp;
+        self.changeset += d_changeset;
+        self.uid += d_uid;
+        self.user_sid += d_user_sid;
+        Some(DenseInfoItem {
+            version,
+            timestamp: self.timestamp,
+            changeset: self.changeset,
+            uid: self.uid,
+            user_sid: self.user_sid,
+            visible,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_features_accepts_supported_and_rejects_unknown() {
+        let mut header = osmformat::HeaderBlock::new();
+        header.required_features.push("OsmSchema-V0.6".to_string());
+        header.required_features.push("DenseNodes".to_string());
+        assert!(HeaderReader::new(header).validate_features().is_ok());
+
+        // Sorting declarations are accepted (sequential reads don't depend on order; the
+        // index validates order on the data).
+        for feature in ["Sort.Type_then_ID", "Sort.Geographic"] {
+            let mut header = osmformat::HeaderBlock::new();
+            header.required_features.push(feature.to_string());
+            assert!(
+                HeaderReader::new(header).validate_features().is_ok(),
+                "{} must be accepted",
+                feature
+            );
+        }
+
+        let mut header = osmformat::HeaderBlock::new();
+        header
+            .required_features
+            .push("Sort.Type_then_ID".to_string());
+        header.required_features.push("Unknown.Feature".to_string());
+        let err = HeaderReader::new(header).validate_features().unwrap_err();
+        assert!(err.to_string().contains("Unknown.Feature"));
+    }
+
+    #[test]
+    fn process_tags_mismatch_is_an_error() {
+        let block = osmformat::PrimitiveBlock::new();
+        let reader = PrimitiveReader::new(block).unwrap();
+        let err = reader.process_tags(&[1, 2], &[1]).unwrap_err();
+        assert!(err.to_string().contains("tag key/value count mismatch"));
+    }
+
+    #[test]
+    fn process_relation_members_mismatch_is_an_error() {
+        let block = osmformat::PrimitiveBlock::new();
+        let reader = PrimitiveReader::new(block).unwrap();
+        let err = reader
+            .build_relation_members(&[1, 2], &[Relation_MemberType::NODE], &[0])
+            .unwrap_err();
+        assert!(err.to_string().contains("size mismatch"));
     }
 }

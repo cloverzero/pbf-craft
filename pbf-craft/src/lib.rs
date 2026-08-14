@@ -39,11 +39,16 @@
 //! use pbf_craft::models::{Element, Node};
 //! use pbf_craft::writers::PbfWriter;
 //!
-//! let mut writer = PbfWriter::from_path("resources/output.osm.pbf", true).unwrap();
+//! let mut writer = PbfWriter::from_path(std::env::temp_dir().join("output.osm.pbf"), true).unwrap();
 //! writer.write(Element::Node(Node::default())).unwrap();
 //! writer.finish().unwrap();
 //! ```
 //!
+
+// Generated protobuf code emits `unused_parens` (a rustc lint) that `#![allow(clippy::all)]`
+// inside `mod proto` cannot suppress (parent-module inner attributes do not reach child
+// modules). Silence it crate-wide for the generated files.
+#![allow(unused_parens)]
 
 mod codecs;
 /// Contains models for elements of OpenStreetMap data.

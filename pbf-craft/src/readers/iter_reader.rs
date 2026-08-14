@@ -3,6 +3,7 @@ use std::io::{BufReader, Read};
 use std::path::Path;
 
 use super::raw_reader::PbfReader;
+use super::raw_reader::ReaderProgress;
 use super::traits::BlobData;
 use crate::models::{Element, ElementType};
 
@@ -32,17 +33,28 @@ pub struct IterableReader<R: Read + Send> {
     current_blob: Option<BlobData>,
     current_element_type: ElementType,
     current_element_index: usize,
+    /// A read error that occurred between blobs. `Iterator` cannot return `Err`, so the error
+    /// is stored here and surfaced (with context) on the next call to `next()`.
+    read_error: Option<anyhow::Error>,
 }
 
 impl<R: Read + Send> IterableReader<R> {
-    /// Creates a new `IterableReader` from a raw pbf reader.
-    pub fn new(mut pbf_reader: PbfReader<R>) -> Self {
-        Self {
-            current_blob: pbf_reader.read_next_blob(),
+    /// Creates a new `IterableReader` from a raw pbf reader, reading the first blob eagerly so
+    /// a malformed stream fails at construction time.
+    pub fn new(mut pbf_reader: PbfReader<R>) -> anyhow::Result<Self> {
+        Ok(Self {
+            current_blob: pbf_reader.read_next_blob()?,
             current_element_type: ElementType::Node,
             current_element_index: 0,
+            read_error: None,
             pbf_reader,
-        }
+        })
+    }
+
+    /// Reports the reader's consumption progress. Delegates to the underlying `PbfReader`,
+    /// so `total_bytes` is known when created via `from_path`.
+    pub fn progress(&self) -> ReaderProgress {
+        self.pbf_reader.progress()
     }
 
     fn next_element(&mut self) -> Option<Element> {
@@ -74,7 +86,13 @@ impl<R: Read + Send> IterableReader<R> {
                         self.current_element_index += 1;
                         return Some(Element::Relation(relation.clone()));
                     } else {
-                        self.current_blob = self.pbf_reader.read_next_blob();
+                        match self.pbf_reader.read_next_blob() {
+                            Ok(next) => self.current_blob = next,
+                            Err(err) => {
+                                self.read_error = Some(err);
+                                self.current_blob = None;
+                            }
+                        }
                         self.current_element_type = ElementType::Node;
                         self.current_element_index = 0;
                     }
@@ -90,6 +108,9 @@ impl<R: Read + Send> Iterator for IterableReader<R> {
     type Item = Element;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if let Some(err) = &self.read_error {
+            panic!("PBF read error during iteration: {}", err);
+        }
         self.next_element()
     }
 }
@@ -98,6 +119,6 @@ impl IterableReader<BufReader<File>> {
     /// Creates a new `IterableReader` from a file path.
     pub fn from_path<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
         let pbf_reader = PbfReader::from_path(path)?;
-        Ok(Self::new(pbf_reader))
+        Self::new(pbf_reader)
     }
 }

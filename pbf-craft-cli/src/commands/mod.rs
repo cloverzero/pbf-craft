@@ -21,20 +21,12 @@ pub enum Commands {
 }
 
 impl Commands {
-    pub fn run(self) {
+    pub fn run(self) -> anyhow::Result<()> {
         match self {
-            Commands::Get(command) => {
-                command.run();
-            }
-            Commands::Search(command) => {
-                command.run();
-            }
-            Commands::Export(command) => {
-                command.run();
-            }
-            Commands::Diff(command) => {
-                command.run();
-            }
+            Commands::Get(command) => command.run(),
+            Commands::Search(command) => command.run(),
+            Commands::Export(command) => command.run(),
+            Commands::Diff(command) => command.run(),
             Commands::Boundary(command) => command.run(),
         }
     }

@@ -7,4 +7,4 @@ mod traits;
 pub use cached_reader::CachedReader;
 pub use indexed_reader::IndexedReader;
 pub use iter_reader::IterableReader;
-pub use raw_reader::PbfReader;
+pub use raw_reader::{PbfReader, ReaderProgress};
