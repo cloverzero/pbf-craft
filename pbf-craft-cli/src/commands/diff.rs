@@ -231,7 +231,7 @@ impl DiffCommand {
         eprintln!();
 
         diff_csv.flush()?;
-        println!("Diff file created: ./{}", &self.output);
+        println!("Diff file created: ./{}", self.output);
         Ok(())
     }
 }

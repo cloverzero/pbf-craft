@@ -580,16 +580,8 @@ fn par_find_matches_sequential_read() {
     let mut seq_ways = 0usize;
     reader
         .read(|_, el| match el {
-            Some(Element::Node(n)) => {
-                if n.id % 1000 == 0 {
-                    seq_nodes += 1;
-                }
-            }
-            Some(Element::Way(w)) => {
-                if w.tags.iter().any(|t| t.key == "highway") {
-                    seq_ways += 1;
-                }
-            }
+            Some(Element::Node(n)) if n.id % 1000 == 0 => seq_nodes += 1,
+            Some(Element::Way(w)) if w.tags.iter().any(|t| t.key == "highway") => seq_ways += 1,
             _ => {}
         })
         .unwrap();
