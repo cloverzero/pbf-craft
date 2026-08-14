@@ -45,6 +45,7 @@ pub struct PbfWriter<W: Write> {
     bbox: Option<Bound>,
     cache: Vec<Element>,
     has_writen_header: bool,
+    has_invisible_elements: bool,
 }
 
 impl PbfWriter<BufWriter<File>> {
@@ -78,6 +79,7 @@ impl<W: Write> PbfWriter<W> {
             bbox: None,
             cache: Vec::new(),
             has_writen_header: false,
+            has_invisible_elements: false,
         }
     }
 
@@ -111,6 +113,15 @@ impl<W: Write> PbfWriter<W> {
                 .required_features
                 .push("DenseNodes".to_string());
         }
+        // Per the PBF spec, a writer that emits `visible = false` (historical data) MUST
+        // declare the HistoricalInformation feature. The flag reflects every element seen
+        // before the header is flushed, so write invisible elements before the first block
+        // fills up (8000 elements) or the header cannot be retroactively amended.
+        if self.has_invisible_elements {
+            header_block
+                .required_features
+                .push("HistoricalInformation".to_string());
+        }
 
         if let Some(bbox) = &self.bbox {
             let mut header_bbox = osmformat::HeaderBBox::new();
@@ -136,6 +147,13 @@ impl<W: Write> PbfWriter<W> {
     /// is up to the programmer to make sure that elements are written in the proper order.
     ///
     pub fn write(&mut self, element: Element) -> anyhow::Result<()> {
+        // Track whether any element is marked invisible so the header can declare the
+        // required HistoricalInformation feature (see `write_header`).
+        match &element {
+            Element::Node(node) => self.has_invisible_elements |= !node.visible,
+            Element::Way(way) => self.has_invisible_elements |= !way.visible,
+            Element::Relation(relation) => self.has_invisible_elements |= !relation.visible,
+        }
         self.cache.push(element);
         if self.cache.len() >= MAX_BLOCK_ITEM_LENGTH {
             self.write_to_block()?;

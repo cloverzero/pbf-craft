@@ -56,7 +56,7 @@ impl FromStr for ElementType {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ElementBase {
     pub id: i64,
     pub version: i32,
@@ -65,6 +65,23 @@ pub struct ElementBase {
     pub changeset_id: i64,
     pub visible: bool,
     pub tags: Vec<Tag>,
+}
+
+// `visible` defaults to true: the PBF spec states the flag "MUST be assumed to be true" when
+// absent, and a derived `Default` would yield `false` for the `bool`, silently marking every
+// freshly-created element as deleted on write.
+impl Default for ElementBase {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            version: 0,
+            timestamp: None,
+            user: None,
+            changeset_id: 0,
+            visible: true,
+            tags: Vec::new(),
+        }
+    }
 }
 
 impl ElementBase {
@@ -84,7 +101,7 @@ pub struct Tag {
     pub value: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Node {
     pub id: i64,
     pub version: i32,
@@ -95,6 +112,24 @@ pub struct Node {
     pub longitude: i64,
     pub visible: bool,
     pub tags: Vec<Tag>,
+}
+
+// See the comment on `ElementBase::default()`: `visible` must default to true, not to the
+// derived `bool` default of false.
+impl Default for Node {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            version: 0,
+            timestamp: None,
+            user: None,
+            changeset_id: 0,
+            latitude: 0,
+            longitude: 0,
+            visible: true,
+            tags: Vec::new(),
+        }
+    }
 }
 
 impl From<ElementBase> for Node {
@@ -113,7 +148,7 @@ impl From<ElementBase> for Node {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Way {
     pub id: i64,
     pub version: i32,
@@ -123,6 +158,22 @@ pub struct Way {
     pub visible: bool,
     pub tags: Vec<Tag>,
     pub way_nodes: Vec<WayNode>,
+}
+
+// `visible` defaults to true — see `ElementBase::default()`.
+impl Default for Way {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            version: 0,
+            timestamp: None,
+            user: None,
+            changeset_id: 0,
+            visible: true,
+            tags: Vec::new(),
+            way_nodes: Vec::new(),
+        }
+    }
 }
 
 impl From<ElementBase> for Way {
@@ -165,7 +216,7 @@ impl WayNode {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Relation {
     pub id: i64,
     pub version: i32,
@@ -175,6 +226,22 @@ pub struct Relation {
     pub visible: bool,
     pub tags: Vec<Tag>,
     pub members: Vec<RelationMember>,
+}
+
+// `visible` defaults to true — see `ElementBase::default()`.
+impl Default for Relation {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            version: 0,
+            timestamp: None,
+            user: None,
+            changeset_id: 0,
+            visible: true,
+            tags: Vec::new(),
+            members: Vec::new(),
+        }
+    }
 }
 
 impl From<ElementBase> for Relation {

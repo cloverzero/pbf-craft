@@ -347,3 +347,78 @@ fn relation_cycle_returns_error() {
         "circular relation dependency must return an error, not crash"
     );
 }
+
+#[test]
+fn default_elements_are_visible() {
+    // Rust's derived Default would give `bool` = false, silently marking every fresh element
+    // as deleted on write. The PBF spec says visible MUST be assumed true when absent, so the
+    // model defaults it to true.
+    assert!(Node::default().visible, "Node::default() must be visible");
+    assert!(Way::default().visible, "Way::default() must be visible");
+    assert!(
+        Relation::default().visible,
+        "Relation::default() must be visible"
+    );
+    assert!(
+        pbf_craft::models::ElementBase::default().visible,
+        "ElementBase::default() must be visible"
+    );
+}
+
+#[test]
+fn roundtrip_default_elements_stay_visible() {
+    // The README/doc example writes `Element::Node(Node::default())`; the output must contain
+    // visible (i.e. current, non-deleted) elements, in both dense and sparse encodings.
+    for use_dense in [true, false] {
+        let out = write_and_read_nodes(
+            &format!("default_visible_{}", use_dense),
+            vec![Node::default()],
+            use_dense,
+        );
+        assert_eq!(out.len(), 1);
+        assert!(
+            out[0].visible,
+            "default-constructed node must roundtrip as visible (dense={})",
+            use_dense
+        );
+    }
+}
+
+#[test]
+fn writer_declares_historical_information_for_invisible() {
+    // Per spec, writing visible=false requires the HistoricalInformation feature, and the
+    // reader must not reject such files (it decodes the visible flag).
+    let file = TempPbf::new("historical");
+    let mut writer = PbfWriter::from_path(file.as_ref(), true).unwrap();
+    let node = Node {
+        visible: false,
+        ..base_node(1)
+    };
+    writer.write(Element::Node(node)).unwrap();
+    writer.finish().unwrap();
+
+    let mut reader = PbfReader::from_path(file.as_ref()).unwrap();
+    let mut features = Vec::new();
+    let mut read_visible = None;
+    reader
+        .read(|header, element| {
+            if let Some(header_reader) = header {
+                features = header_reader.required_features();
+            }
+            if let Some(Element::Node(n)) = element {
+                read_visible = Some(n.visible);
+            }
+        })
+        .unwrap();
+
+    assert!(
+        features.iter().any(|f| f == "HistoricalInformation"),
+        "header must declare HistoricalInformation when visible=false is written, got {:?}",
+        features
+    );
+    assert_eq!(
+        read_visible,
+        Some(false),
+        "visible=false must survive roundtrip"
+    );
+}

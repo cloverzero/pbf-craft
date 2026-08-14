@@ -17,8 +17,16 @@ impl HeaderReader {
         Self { header }
     }
 
+    /// The required features declared by the file's header block.
+    pub fn required_features(&self) -> Vec<String> {
+        self.header.get_required_features().to_vec()
+    }
+
     pub fn meta(&self) -> HashMap<String, String> {
-        let supported_features: Vec<&str> = vec!["OsmSchema-V0.6", "DenseNodes"];
+        // HistoricalInformation is supported: the decoder reads the visible flag, so files
+        // with historical data must not be rejected here.
+        let supported_features: Vec<&str> =
+            vec!["OsmSchema-V0.6", "DenseNodes", "HistoricalInformation"];
         let mut unsupported: Vec<String> = Vec::new();
         for feature in self.header.get_required_features() {
             if !supported_features.contains(&&feature[..]) {
