@@ -1,11 +1,12 @@
 use std::fs::File;
 use std::io::BufReader;
+use std::time::{Duration, Instant};
 
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
 use pbf_craft::models::{Element, ElementType};
-use pbf_craft::readers::IterableReader;
+use pbf_craft::readers::{IterableReader, ReaderProgress};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DiffType {
@@ -61,6 +62,11 @@ impl SortedElementStream {
         })
     }
 
+    /// Passes through the underlying reader's progress (percent of each file consumed).
+    fn progress(&self) -> ReaderProgress {
+        self.iter.progress()
+    }
+
     fn next(&mut self) -> anyhow::Result<Option<Element>> {
         match self.iter.next() {
             Some(element) => {
@@ -95,6 +101,27 @@ impl DiffCommand {
         let mut source_element_cnt = source.next()?;
         let mut target_element_cnt = target.next()?;
 
+        // Progress reporting: poll every ~4096 iterations, but at most every 250 ms, and
+        // render an overwritten line on stderr so the CSV output stays clean.
+        let mut last_report = Instant::now();
+        let mut iterations = 0u64;
+        macro_rules! report_progress {
+            () => {
+                if iterations % 4096 == 0 && last_report.elapsed() >= Duration::from_millis(250) {
+                    let progress_text = |progress: ReaderProgress| match progress.percent() {
+                        Some(p) => format!("{:.1}%", p),
+                        None => format!("{} bytes", progress.bytes_read),
+                    };
+                    eprint!(
+                        "\rdiff: source {}, target {}   ",
+                        progress_text(source.progress()),
+                        progress_text(target.progress()),
+                    );
+                    last_report = Instant::now();
+                }
+            };
+        }
+
         macro_rules! record {
             ($element_type:expr, $element_id:expr, $diff_type:expr) => {
                 diff_csv.serialize(ElementDiff {
@@ -106,6 +133,8 @@ impl DiffCommand {
         }
 
         loop {
+            iterations += 1;
+            report_progress!();
             match (&source_element_cnt, &target_element_cnt) {
                 (Some(source_element), Some(target_element)) => {
                     match (source_element, target_element) {
@@ -197,6 +226,9 @@ impl DiffCommand {
                 (None, None) => break,
             }
         }
+
+        // Terminate the progress line.
+        eprintln!();
 
         diff_csv.flush()?;
         println!("Diff file created: ./{}", &self.output);

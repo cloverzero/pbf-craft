@@ -3,6 +3,7 @@ use std::io::{BufReader, Read};
 use std::path::Path;
 
 use super::raw_reader::PbfReader;
+use super::raw_reader::ReaderProgress;
 use super::traits::BlobData;
 use crate::models::{Element, ElementType};
 
@@ -48,6 +49,12 @@ impl<R: Read + Send> IterableReader<R> {
             read_error: None,
             pbf_reader,
         })
+    }
+
+    /// Reports the reader's consumption progress. Delegates to the underlying `PbfReader`,
+    /// so `total_bytes` is known when created via `from_path`.
+    pub fn progress(&self) -> ReaderProgress {
+        self.pbf_reader.progress()
     }
 
     fn next_element(&mut self) -> Option<Element> {

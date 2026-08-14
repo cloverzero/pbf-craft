@@ -10,6 +10,35 @@ use crate::codecs::blob::{BlobReader, DecodedBlob};
 use crate::codecs::block_decorators::{HeaderReader, PrimitiveReader};
 use crate::models::{Element, ElementType};
 
+/// A snapshot of a reader's consumption progress, obtained via [`PbfReader::progress`]
+/// (or `IterableReader::progress` / any `Deref`-inheriting reader with sequential
+/// semantics). Callers can poll it at their own rate (e.g. every 250 ms) to render a
+/// progress bar.
+///
+/// Progress is byte-based: `bytes_read` is the stream position and is only meaningful for
+/// sequential reads — random-access readers (`CachedReader` after a `seek`) report the
+/// position of the current seek, not a global progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReaderProgress {
+    /// Bytes consumed from the stream so far (equals the total length at EOF).
+    pub bytes_read: u64,
+    /// Total stream length; `None` when unknown (e.g. non-file streams).
+    pub total_bytes: Option<u64>,
+}
+
+impl ReaderProgress {
+    /// Fraction of the stream consumed, `None` when the total length is unknown.
+    pub fn fraction(&self) -> Option<f64> {
+        self.total_bytes
+            .map(|total| self.bytes_read as f64 / total as f64)
+    }
+
+    /// Percentage of the stream consumed, `None` when the total length is unknown.
+    pub fn percent(&self) -> Option<f64> {
+        self.fraction().map(|f| f * 100.0)
+    }
+}
+
 /// A fundamental reader for PBF data.
 ///
 /// The `PbfReader` struct provides functionality to read and process PBF files,
@@ -38,13 +67,26 @@ use crate::models::{Element, ElementType};
 /// ```
 pub struct PbfReader<R: Read + Send> {
     blob_reader: BlobReader<R>,
+    total_bytes: Option<u64>,
 }
 
 impl<R: Read + Send> PbfReader<R> {
     /// Creates a new `PbfReader` instance with the specified reader which implements `Read` and `Send` traits.
+    ///
+    /// The total stream length is unknown for an arbitrary `R`; use `from_path` to enable
+    /// percentage reporting.
     pub fn new(reader: R) -> PbfReader<R> {
         Self {
             blob_reader: BlobReader::new(reader),
+            total_bytes: None,
+        }
+    }
+
+    /// Reports the reader's consumption progress (bytes consumed vs total length, if known).
+    pub fn progress(&self) -> ReaderProgress {
+        ReaderProgress {
+            bytes_read: self.blob_reader.offset,
+            total_bytes: self.total_bytes,
         }
     }
 
@@ -259,11 +301,16 @@ impl<R: Read + Send> PbfReader<R> {
 }
 
 impl PbfReader<BufReader<File>> {
-    /// Creates a new `PbfReader` instance with the specified file path.
+    /// Creates a new `PbfReader` instance with the specified file path. The file length is
+    /// recorded so [`ReaderProgress::percent`] can be reported.
     pub fn from_path<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
+        let total_bytes = std::fs::metadata(path.as_ref())?.len();
         let f = File::open(path)?;
         let reader = BufReader::new(f);
-        Ok(Self::new(reader))
+        Ok(Self {
+            blob_reader: BlobReader::new(reader),
+            total_bytes: Some(total_bytes),
+        })
     }
 
     /// Rewinds the reader to the beginning of the file.

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use pbf_craft::models::{
     Element, ElementType, Node, OsmUser, Relation, RelationMember, Tag, Way, WayNode,
 };
-use pbf_craft::readers::{IndexedReader, PbfReader};
+use pbf_craft::readers::{CachedReader, IndexedReader, PbfReader};
 use pbf_craft::writers::PbfWriter;
 
 /// A unique temp file path per test; removed on drop.
@@ -618,4 +618,73 @@ fn par_find_matches_sequential_read() {
         seq_ways,
         "par_find way count must match sequential read"
     );
+}
+
+#[test]
+fn iterable_reader_reports_progress() {
+    // >8000 elements force multiple blobs, so byte progress advances in steps and ends at 100%.
+    let file = TempPbf::new("progress");
+    let mut writer = PbfWriter::from_path(file.as_ref(), true).unwrap();
+    let total = 16_010i64; // two full blocks + a partial one
+    for id in 1..=total {
+        writer.write(Element::Node(base_node(id))).unwrap();
+    }
+    writer.finish().unwrap();
+
+    let mut reader = pbf_craft::readers::IterableReader::from_path(file.as_ref()).unwrap();
+    let mut consumed = 0u64;
+    let mut mid_percent = None;
+    let mut prev = 0.0f64;
+    while let Some(_element) = reader.next() {
+        consumed += 1;
+        let percent = reader
+            .progress()
+            .percent()
+            .expect("from_path knows the total");
+        assert!(
+            percent >= prev,
+            "percent must be monotonic ({} then {})",
+            prev,
+            percent
+        );
+        prev = percent;
+        if consumed == 4001 {
+            mid_percent = Some(percent);
+        }
+    }
+    assert_eq!(consumed, total as u64);
+    let mid = mid_percent.expect("mid-progress must be sampled");
+    assert!(
+        (0.0..100.0).contains(&mid),
+        "mid-iteration progress must be strictly between 0% and 100%, got {}",
+        mid
+    );
+    assert_eq!(
+        reader.progress().percent(),
+        Some(100.0),
+        "EOF must report 100%"
+    );
+}
+
+#[test]
+fn reader_progress_unknown_total() {
+    // A non-file stream has no known length: percent must be None.
+    let reader = pbf_craft::readers::PbfReader::new(std::io::Cursor::new(Vec::<u8>::new()));
+    let progress = reader.progress();
+    assert_eq!(progress.total_bytes, None);
+    assert_eq!(progress.percent(), None);
+}
+
+#[test]
+fn cached_reader_inherits_progress_via_deref() {
+    // CachedReader derefs to PbfReader, so progress() is available with zero extra code.
+    let file = TempPbf::new("cached_progress");
+    let mut writer = PbfWriter::from_path(file.as_ref(), true).unwrap();
+    writer.write(Element::Node(base_node(1))).unwrap();
+    writer.finish().unwrap();
+    let expected_len = std::fs::metadata(file.as_ref()).unwrap().len();
+
+    let reader = pbf_craft::readers::PbfReader::from_path(file.as_ref()).unwrap();
+    let cached = CachedReader::new(reader, 10);
+    assert_eq!(cached.progress().total_bytes, Some(expected_len));
 }
