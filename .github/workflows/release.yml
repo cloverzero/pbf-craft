@@ -60,6 +60,40 @@ jobs:
         with:
           name: pbf-craft-${{ matrix.target }}
           path: dist/
+
+  # Publish both crates to crates.io. Order matters: pbf-craft-cli depends on the published
+  # pbf-craft, so the library must be uploaded first (its publish verification resolves the
+  # dependency from crates.io). Keep the crate versions and the CLI's `pbf-craft` dependency
+  # version in sync with the release tag.
+  #
+  # Setup: create a crates.io API token (https://crates.io/settings/tokens, scope
+  # "publish-new" or "publish-update") and store it as a repository secret named
+  # CARGO_REGISTRY_TOKEN.
+  publish:
+    name: Publish to crates.io
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Dry-run pbf-craft packaging
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --dry-run -p pbf-craft
+
+      - name: Publish pbf-craft
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p pbf-craft
+
+      - name: Publish pbf-craft-cli
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p pbf-craft-cli
+
   release:
     needs: build
     runs-on: ubuntu-latest
