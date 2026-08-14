@@ -141,10 +141,10 @@ impl<W: Write> PbfWriter<W> {
 
     /// Writes an element.
     ///
-    /// Please note: according to the PBF specification, element ids must be strictly
-    /// increasing within a block. `write` buffers elements and the block is flushed either
-    /// when 8000 elements are buffered or on `finish`/drop; unsorted ids are rejected with an
-    /// error when a block is written.
+    /// Please note: the PBF format does not require sorted elements, but `IndexedReader` and
+    /// most other tools assume the conventional ordering (all nodes by id, then all ways by
+    /// id, then all relations by id). The writer stores elements in the order they are
+    /// written — the caller is responsible for providing them in the desired order.
     ///
     pub fn write(&mut self, element: Element) -> anyhow::Result<()> {
         // Track whether any element is marked invisible so the header can declare the
@@ -172,7 +172,7 @@ impl<W: Write> PbfWriter<W> {
         }
         let block_builder = PrimitiveBuilder::new();
         let cache = mem::take(&mut self.cache);
-        let block = block_builder.build(cache, self.use_dense)?;
+        let block = block_builder.build(cache, self.use_dense);
 
         let blob = self.build_raw_blob(block.write_to_bytes()?)?;
         self.write_blob(blob, "OSMData")?;

@@ -358,19 +358,6 @@ fn crafted_sorted_file_is_indexable() {
 }
 
 #[test]
-fn writer_rejects_unsorted_ids() {
-    let file = TempPbf::new("unsorted_write");
-    let mut writer = PbfWriter::from_path(file.as_ref(), true).unwrap();
-    writer.write(Element::Node(base_node(1))).unwrap();
-    writer.write(Element::Node(base_node(3))).unwrap();
-    writer.write(Element::Node(base_node(2))).unwrap();
-    assert!(
-        writer.finish().is_err(),
-        "unsorted ids must be rejected when a block is written"
-    );
-}
-
-#[test]
 fn writer_drop_flushes_buffered_elements() {
     // A forgotten finish() must not silently produce an empty file: Drop flushes the buffer.
     let file = TempPbf::new("drop_flush");

@@ -9,8 +9,16 @@ use crate::proto::osmformat;
 use crate::proto::osmformat::Relation_MemberType;
 
 /// The PBF required features this crate can decode. Mirrors osmosis's supported set, plus
-/// HistoricalInformation because the decoder reads the visible flag.
-const SUPPORTED_FEATURES: &[&str] = &["OsmSchema-V0.6", "DenseNodes", "HistoricalInformation"];
+/// HistoricalInformation (the decoder reads the visible flag) and the two sorting
+/// declarations: sequential reading does not depend on element order, and `IndexedReader`
+/// validates order on the actual data rather than trusting the declaration.
+const SUPPORTED_FEATURES: &[&str] = &[
+    "OsmSchema-V0.6",
+    "DenseNodes",
+    "HistoricalInformation",
+    "Sort.Type_then_ID",
+    "Sort.Geographic",
+];
 
 pub struct HeaderReader {
     header: osmformat::HeaderBlock,
@@ -493,12 +501,25 @@ mod tests {
         header.required_features.push("DenseNodes".to_string());
         assert!(HeaderReader::new(header).validate_features().is_ok());
 
+        // Sorting declarations are accepted (sequential reads don't depend on order; the
+        // index validates order on the data).
+        for feature in ["Sort.Type_then_ID", "Sort.Geographic"] {
+            let mut header = osmformat::HeaderBlock::new();
+            header.required_features.push(feature.to_string());
+            assert!(
+                HeaderReader::new(header).validate_features().is_ok(),
+                "{} must be accepted",
+                feature
+            );
+        }
+
         let mut header = osmformat::HeaderBlock::new();
         header
             .required_features
             .push("Sort.Type_then_ID".to_string());
+        header.required_features.push("Unknown.Feature".to_string());
         let err = HeaderReader::new(header).validate_features().unwrap_err();
-        assert!(err.to_string().contains("Sort.Type_then_ID"));
+        assert!(err.to_string().contains("Unknown.Feature"));
     }
 
     #[test]

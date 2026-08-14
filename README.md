@@ -53,9 +53,11 @@ writer.finish().unwrap();
 
 - **Coordinates**: `Node.latitude` / `Node.longitude` are i64 **nanodegrees** (the raw PBF
   unit; divide by 1e9 for degrees). `Bound` fields are nanodegrees as well.
-- **Sorting**: when writing, element ids must be strictly increasing per type within each
-  block (the PBF spec requires it). `PbfWriter` buffers 8000 elements per block and rejects
-  unsorted input with an error.
+- **Sorting**: the PBF format does not require sorted elements, but the conventional file
+  layout (all nodes by id, then all ways by id, then all relations by id) is assumed by
+  `IndexedReader` and most other tools. `PbfWriter` stores elements in the order written —
+  the caller is responsible for the order; `IndexedReader` rejects unordered files with an
+  error when building its index.
 - **Compression**: reading supports `raw`, `zlib`, `lz4` and `zstd` blobs; writing produces
   `zlib`-compressed blobs.
 - **visible flag**: elements default to `visible = true` (per spec, the flag is assumed true

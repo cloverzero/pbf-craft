@@ -16,11 +16,11 @@ pub struct SearchCommand {
     #[clap(long, value_parser)]
     elid: Option<i64>,
 
-    /// tag key
+    /// tag key (substring match against tag keys)
     #[clap(long, value_parser)]
     tagkey: Option<String>,
 
-    /// tag value
+    /// tag value (substring match against tag values)
     #[clap(long, value_parser)]
     tagvalue: Option<String>,
 

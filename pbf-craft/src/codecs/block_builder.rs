@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use protobuf::RepeatedField;
 
 use super::field::FieldCodec;
-use crate::models::{BasicElement, Element, ElementType, Node, Relation, Tag, Way};
+use crate::models::{Element, ElementType, Node, Relation, Tag, Way};
 use crate::proto::osmformat;
 
 struct StringTableBuilder {
@@ -294,11 +294,13 @@ impl PrimitiveBuilder {
         self.block.primitivegroup.push(group);
     }
 
-    pub fn build(
-        mut self,
-        elements: Vec<Element>,
-        use_dense: bool,
-    ) -> anyhow::Result<osmformat::PrimitiveBlock> {
+    /// Builds a `PrimitiveBlock` from the given elements.
+    ///
+    /// Ordering is the caller's responsibility: the PBF format does not require sorted ids
+    /// for correct encoding (dense deltas handle any order), so no order validation is done
+    /// here. Note that `IndexedReader` does require sorted input and rejects unordered files
+    /// when building its index.
+    pub fn build(mut self, elements: Vec<Element>, use_dense: bool) -> osmformat::PrimitiveBlock {
         let mut nodes = Vec::new();
         let mut ways = Vec::new();
         let mut relations = Vec::new();
@@ -309,12 +311,6 @@ impl PrimitiveBuilder {
                 Element::Relation(relation) => relations.push(relation),
             }
         }
-        // The PBF spec requires element ids to be strictly increasing within a block (dense
-        // delta encoding and the index both rely on it). Reject unsorted input loudly instead
-        // of silently producing a corrupt file.
-        Self::ensure_sorted(&nodes, "node")?;
-        Self::ensure_sorted(&ways, "way")?;
-        Self::ensure_sorted(&relations, "relation")?;
         // Dense encoding cannot represent a tag with an empty key/value: index 0 is the
         // reserved node terminator, so `add("")` resolves to 0 and the decoder would treat
         // the tag as the end of the node. Fall the whole block back to sparse nodes, where
@@ -337,22 +333,7 @@ impl PrimitiveBuilder {
 
         self.block
             .set_stringtable(self.string_table.into_string_table());
-        Ok(self.block)
-    }
-
-    fn ensure_sorted<T: BasicElement>(elements: &[T], kind: &str) -> anyhow::Result<()> {
-        for pair in elements.windows(2) {
-            if pair[1].get_id() <= pair[0].get_id() {
-                bail!(
-                    "elements of type {} are not in strictly increasing id order (id {} followed by id {}); \
-                     PBF blocks require sorted ids",
-                    kind,
-                    pair[0].get_id(),
-                    pair[1].get_id()
-                );
-            }
-        }
-        Ok(())
+        self.block
     }
 }
 
