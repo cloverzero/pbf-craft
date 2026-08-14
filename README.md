@@ -48,3 +48,19 @@ let mut writer = PbfWriter::from_path(std::env::temp_dir().join("output.osm.pbf"
 writer.write(Element::Node(Node::default())).unwrap();
 writer.finish().unwrap();
 ```
+
+## Data format notes
+
+- **Coordinates**: `Node.latitude` / `Node.longitude` are i64 **nanodegrees** (the raw PBF
+  unit; divide by 1e9 for degrees). `Bound` fields are nanodegrees as well.
+- **Sorting**: when writing, element ids must be strictly increasing per type within each
+  block (the PBF spec requires it). `PbfWriter` buffers 8000 elements per block and rejects
+  unsorted input with an error.
+- **Compression**: reading supports `raw`, `zlib`, `lz4` and `zstd` blobs; writing produces
+  `zlib`-compressed blobs.
+- **visible flag**: elements default to `visible = true` (per spec, the flag is assumed true
+  when absent). Elements explicitly marked `visible = false` are written with the required
+  `HistoricalInformation` feature declared in the header.
+- **Indexing**: `IndexedReader` builds a `.pif` index validated against the PBF file's size
+  and mtime; unsorted files are rejected with an error rather than silently returning wrong
+  lookup results.

@@ -1,21 +1,7 @@
 //! Regression tests for confirmed data-loss and robustness bugs (see FIX_PLAN.md).
 //!
-//! Status matrix after Phase 1 (all data-loss bugs fixed):
-//!
-//! | test                                       | status | fix ref |
-//! |--------------------------------------------|--------|---------|
-//! | dense_roundtrip_preserves_visible_false    | PASS   | 1.2     |
-//! | sparse_roundtrip_preserves_visible_false   | PASS   | 1.2     |
-//! | roundtrip_preserves_timestamp_none         | PASS   | 1.3     |
-//! | roundtrip_empty_tag_key                    | PASS   | 1.1     |
-//! | roundtrip_tag_key_equals_first_string      | PASS   | 1.1     |
-//! | relation_cycle_returns_error               | PASS   | 1.4     |
-//! | roundtrip_mixed_types_and_multi_block      | PASS   | -       |
-//! | truncated_file_returns_error               | PASS   | 2.4     |
-//! | unsorted_file_index_silent_miss            | FAIL   | 3.2     |
-//!
-//! `unsorted_file_index_silent_miss` stays red until FIX_PLAN 3.2 (index must detect and
-//! error on unsorted files instead of silently missing elements).
+//! Status after Phase 3 (all data-loss and robustness fixes landed): every test here is
+//! expected to pass.
 use std::path::PathBuf;
 
 use pbf_craft::models::{
@@ -247,44 +233,184 @@ fn roundtrip_mixed_types_and_multi_block() {
     assert_eq!(relations[0].members.len(), 1);
 }
 
-#[test]
-fn unsorted_file_index_silent_miss() {
-    // The index maps "last element id per blob" -> blob offset and relies on the file being
-    // sorted by id. An unsorted file currently makes find_node() silently return None for an
-    // element that exists in the file. Desired (FIX_PLAN 3.2): detect and error instead.
-    let file = TempPbf::new("unsorted_index");
-    let mut writer = PbfWriter::from_path(file.as_ref(), true).unwrap();
-    // Block 1: ids 1..=8000 (flushed when the cache reaches 8000).
-    for id in 1..=8000 {
-        writer.write(Element::Node(base_node(id))).unwrap();
-    }
-    // Block 2 (partial, flushed by finish()): overlapping lower ids 4801..=5600.
-    for id in 4801..=5600 {
-        writer.write(Element::Node(base_node(id))).unwrap();
-    }
-    writer.finish().unwrap();
+// Minimal hand-rolled protobuf encoding helpers so tests can craft PBF files the writer
+// refuses to produce (e.g. unsorted element ids).
 
-    // Prove the element exists via a sequential read.
+fn varint(mut v: u64, out: &mut Vec<u8>) {
+    loop {
+        let b = (v & 0x7f) as u8;
+        v >>= 7;
+        if v == 0 {
+            out.push(b);
+            break;
+        }
+        out.push(b | 0x80);
+    }
+}
+
+fn zigzag(v: i64) -> u64 {
+    ((v << 1) ^ (v >> 63)) as u64
+}
+
+/// A sparse `Node` message: id (field 1, sint64), lat (field 8), lon (field 9); no tags/info.
+fn node_bytes(id: i64) -> Vec<u8> {
+    let mut b = Vec::new();
+    b.push(0x08);
+    varint(zigzag(id), &mut b);
+    b.push(0x40);
+    varint(zigzag(id * 100), &mut b);
+    b.push(0x48);
+    varint(zigzag(id * 200), &mut b);
+    b
+}
+
+fn string_table_bytes() -> Vec<u8> {
+    // StringTable { s: [""] } — one empty entry at index 0.
+    vec![0x0a, 0x00]
+}
+
+fn primitive_block_bytes(nodes: &[i64]) -> Vec<u8> {
+    let st = string_table_bytes();
+    let mut group = Vec::new();
+    for id in nodes {
+        let n = node_bytes(*id);
+        group.push(0x0a); // PrimitiveGroup.nodes (field 1, message)
+        varint(n.len() as u64, &mut group);
+        group.extend_from_slice(&n);
+    }
+    let mut b = Vec::new();
+    b.push(0x0a); // PrimitiveBlock.stringtable (field 1, message)
+    varint(st.len() as u64, &mut b);
+    b.extend_from_slice(&st);
+    b.push(0x12); // PrimitiveBlock.primitivegroup (field 2, message)
+    varint(group.len() as u64, &mut b);
+    b.extend_from_slice(&group);
+    b
+}
+
+fn frame(blob_type: &str, raw: &[u8]) -> Vec<u8> {
+    // Blob { raw: raw } (field 1, bytes)
+    let mut blob = Vec::new();
+    blob.push(0x0a);
+    varint(raw.len() as u64, &mut blob);
+    blob.extend_from_slice(raw);
+    // BlobHeader { type, datasize }
+    let mut header = Vec::new();
+    header.push(0x0a);
+    varint(blob_type.len() as u64, &mut header);
+    header.extend_from_slice(blob_type.as_bytes());
+    header.push(0x18);
+    varint(blob.len() as u64, &mut header);
+    // u32 BE header length + header + blob
+    let mut out = Vec::new();
+    out.extend_from_slice(&(header.len() as u32).to_be_bytes());
+    out.extend_from_slice(&header);
+    out.extend_from_slice(&blob);
+    out
+}
+
+/// A valid PBF (header + one data blob) with the given node ids per blob.
+fn crafted_pbf(node_blobs: &[&[i64]]) -> Vec<u8> {
+    let mut header_raw = Vec::new();
+    header_raw.push(0x22); // HeaderBlock.required_features (field 4, string)
+    varint("OsmSchema-V0.6".len() as u64, &mut header_raw);
+    header_raw.extend_from_slice(b"OsmSchema-V0.6");
+    let mut out = frame("OSMHeader", &header_raw);
+    for nodes in node_blobs {
+        out.extend_from_slice(&frame("OSMData", &primitive_block_bytes(nodes)));
+    }
+    out
+}
+
+#[test]
+fn unsorted_file_index_returns_error() {
+    // The index maps "last element id per blob" -> blob offset and relies on the file being
+    // sorted by id. A file with disorder (hand-crafted, since the writer now rejects it) must
+    // fail loudly at index build time instead of silently missing elements later.
+    let file = TempPbf::new("unsorted_index");
+    // Blob 1: ids 1..3; blob 2: ids 2..4 — not monotonically increasing across blobs.
+    std::fs::write(file.as_ref(), crafted_pbf(&[&[1, 2, 3], &[2, 3, 4]])).unwrap();
+
+    let err = match IndexedReader::from_path(file.as_ref().to_str().unwrap()) {
+        Ok(_) => panic!("unsorted file must be rejected by the index"),
+        Err(e) => e,
+    };
+    assert!(
+        err.to_string().contains("not sorted"),
+        "expected a 'not sorted' error, got: {}",
+        err
+    );
+}
+
+#[test]
+fn crafted_sorted_file_is_indexable() {
+    // Sanity check for the hand-rolled encoder: a sorted crafted file must index and find.
+    let file = TempPbf::new("sorted_index");
+    std::fs::write(file.as_ref(), crafted_pbf(&[&[1, 2, 3], &[4, 5, 6]])).unwrap();
+
+    let mut indexed = IndexedReader::from_path(file.as_ref().to_str().unwrap()).unwrap();
+    let node = indexed.find_node(5).unwrap();
+    assert!(
+        node.is_some(),
+        "crafted sorted file must support indexed lookup"
+    );
+    assert_eq!(node.unwrap().id, 5);
+}
+
+#[test]
+fn writer_rejects_unsorted_ids() {
+    let file = TempPbf::new("unsorted_write");
+    let mut writer = PbfWriter::from_path(file.as_ref(), true).unwrap();
+    writer.write(Element::Node(base_node(1))).unwrap();
+    writer.write(Element::Node(base_node(3))).unwrap();
+    writer.write(Element::Node(base_node(2))).unwrap();
+    assert!(
+        writer.finish().is_err(),
+        "unsorted ids must be rejected when a block is written"
+    );
+}
+
+#[test]
+fn writer_drop_flushes_buffered_elements() {
+    // A forgotten finish() must not silently produce an empty file: Drop flushes the buffer.
+    let file = TempPbf::new("drop_flush");
+    {
+        let mut writer = PbfWriter::from_path(file.as_ref(), true).unwrap();
+        writer.write(Element::Node(base_node(1))).unwrap();
+        // no finish()
+    }
     let mut reader = PbfReader::from_path(file.as_ref()).unwrap();
-    let mut found = false;
+    let mut count = 0;
     reader
-        .read(|_, element| {
-            if let Some(Element::Node(n)) = element {
-                if n.id == 3000 {
-                    found = true;
-                }
+        .read(|_, el| {
+            if el.is_some() {
+                count += 1;
             }
         })
         .unwrap();
-    assert!(found, "node 3000 must exist in the file");
-
-    // Indexed lookup currently resolves 3000 to block 2's offset and misses it.
-    let mut indexed = IndexedReader::from_path(file.as_ref().to_str().unwrap()).unwrap();
-    let node = indexed.find_node(3000).unwrap();
-    assert!(
-        node.is_some(),
-        "indexed lookup of an existing node must not silently miss on unsorted files"
+    assert_eq!(
+        count, 1,
+        "dropped writer must still flush buffered elements"
     );
+}
+
+#[test]
+fn finish_without_elements_writes_valid_header_only() {
+    let file = TempPbf::new("empty_finish");
+    {
+        let mut writer = PbfWriter::from_path(file.as_ref(), true).unwrap();
+        writer.finish().unwrap();
+    }
+    let mut reader = PbfReader::from_path(file.as_ref()).unwrap();
+    let mut count = 0;
+    reader
+        .read(|_, el| {
+            if el.is_some() {
+                count += 1;
+            }
+        })
+        .unwrap();
+    assert_eq!(count, 0, "empty finish() must not emit an empty data block");
 }
 
 #[test]

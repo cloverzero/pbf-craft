@@ -18,11 +18,13 @@ anyhow = { version = "1.0", features = ["backtrace"] }
 byteorder = "1"
 chrono = { version = "0.4", features = ["serde"] }
 flate2 = "1.0"
+lz4_flex = "0.11"
 protobuf = "2"
 quick_cache = "0.6"
 rayon = "1"
 serde = { version = "1.0.142", features = ["derive"] }
 serde_json = "1.0.83"
+zstd = "0.13"
 
 [build-dependencies]
 protobuf-codegen-pure = "2"

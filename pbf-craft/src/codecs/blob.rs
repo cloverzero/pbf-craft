@@ -44,7 +44,20 @@ impl RawBlob {
         } else if blob.has_zlib_data() {
             let mut decoder = ZlibDecoder::new(blob.get_zlib_data());
             protobuf::Message::parse_from_reader(&mut decoder)?
+        } else if blob.has_lz4_data() {
+            // The lz4 block format is not self-describing; the uncompressed size comes from
+            // the blob's raw_size field.
+            let decompressed =
+                lz4_flex::block::decompress(blob.get_lz4_data(), blob.get_raw_size() as usize)
+                    .map_err(|e| anyhow!("failed to decompress lz4 blob: {}", e))?;
+            protobuf::Message::parse_from_bytes(&decompressed)?
+        } else if blob.has_zstd_data() {
+            let decompressed = zstd::stream::decode_all(blob.get_zstd_data())
+                .map_err(|e| anyhow!("failed to decompress zstd blob: {}", e))?;
+            protobuf::Message::parse_from_bytes(&decompressed)?
         } else {
+            // lzma_data is not supported (requires a C toolchain via xz2); deprecated
+            // bzip2 is intentionally unsupported.
             bail!("Unsupported blob data type")
         };
         Ok(decoded)
@@ -149,5 +162,69 @@ impl<R: Read + Send> Iterator for BlobReader<R> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::osmformat::HeaderBlock;
+    use protobuf::Message;
+
+    fn wrap(blob: Blob, blob_type: &str) -> RawBlob {
+        let mut header = BlobHeader::new();
+        header.set_datasize(blob.write_to_bytes().unwrap().len() as i32);
+        header.set_field_type(blob_type.to_owned());
+        RawBlob {
+            header,
+            raw_blob: blob.write_to_bytes().unwrap(),
+        }
+    }
+
+    #[test]
+    fn decode_lz4_blob() {
+        let raw = HeaderBlock::new().write_to_bytes().unwrap();
+        let compressed = lz4_flex::block::compress(&raw);
+        let mut blob = Blob::new();
+        blob.set_lz4_data(compressed);
+        blob.set_raw_size(raw.len() as i32);
+        let decoded = wrap(blob, "OSMHeader").decode().unwrap();
+        assert!(matches!(decoded, Some(DecodedBlob::OsmHeader(_))));
+    }
+
+    #[test]
+    fn decode_zstd_blob() {
+        let raw = HeaderBlock::new().write_to_bytes().unwrap();
+        let compressed = zstd::stream::encode_all(&raw[..], 3).unwrap();
+        let mut blob = Blob::new();
+        blob.set_zstd_data(compressed);
+        blob.set_raw_size(raw.len() as i32);
+        let decoded = wrap(blob, "OSMHeader").decode().unwrap();
+        assert!(matches!(decoded, Some(DecodedBlob::OsmHeader(_))));
+    }
+
+    #[test]
+    fn decode_unknown_blob_type_returns_none() {
+        let raw = HeaderBlock::new().write_to_bytes().unwrap();
+        let mut blob = Blob::new();
+        blob.set_raw(raw);
+        let decoded = wrap(blob, "SomethingNew").decode().unwrap();
+        assert!(decoded.is_none());
+    }
+
+    #[test]
+    fn blob_header_size_limit_is_enforced() {
+        let mut reader = BlobReader::new(std::io::empty());
+        let err = reader.read_blob_header(MAX_HEADER_SIZE + 1).unwrap_err();
+        assert!(err.to_string().contains("header"));
+    }
+
+    #[test]
+    fn blob_body_size_limit_is_enforced() {
+        let mut header = BlobHeader::new();
+        header.set_datasize((MAX_BLOB_SIZE + 1) as i32);
+        let mut reader = BlobReader::new(std::io::empty());
+        let err = reader.read_blob(&header).unwrap_err();
+        assert!(err.to_string().contains("blob body"));
     }
 }

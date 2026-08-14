@@ -5,6 +5,11 @@ use quick_cache::unsync::Cache;
 use super::raw_reader::PbfReader;
 use super::traits::{BlobData, PbfRandomRead};
 
+/// A random-access reader that caches decoded blobs in memory.
+///
+/// `cache_capacity` counts **entries (decoded blobs)**, not bytes. A blob holds on the order
+/// of 8000 elements, so a capacity of N keeps roughly N × (blob size) of decoded data in
+/// memory — size each entry against your available memory accordingly.
 pub struct CachedReader {
     reader: PbfReader<BufReader<File>>,
     blob_cache: Cache<u64, Rc<BlobData>>,

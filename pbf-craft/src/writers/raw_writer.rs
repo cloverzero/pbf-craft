@@ -44,7 +44,7 @@ pub struct PbfWriter<W: Write> {
     use_dense: bool,
     bbox: Option<Bound>,
     cache: Vec<Element>,
-    has_writen_header: bool,
+    has_written_header: bool,
     has_invisible_elements: bool,
 }
 
@@ -78,7 +78,7 @@ impl<W: Write> PbfWriter<W> {
             use_dense,
             bbox: None,
             cache: Vec::new(),
-            has_writen_header: false,
+            has_written_header: false,
             has_invisible_elements: false,
         }
     }
@@ -135,16 +135,16 @@ impl<W: Write> PbfWriter<W> {
 
         let blob = self.build_raw_blob(header_block.write_to_bytes()?)?;
         self.write_blob(blob, "OSMHeader")?;
-        self.has_writen_header = true;
+        self.has_written_header = true;
         Ok(())
     }
 
     /// Writes an element.
     ///
-    /// Please note: According to the PBF specification, you should write the elements in the order of
-    /// Node, Way, Relation, and for all elements of each type, the IDs should be written in the order
-    /// of smallest to largest. PbfWriter writes elements in the order in which `write` is called, so it
-    /// is up to the programmer to make sure that elements are written in the proper order.
+    /// Please note: according to the PBF specification, element ids must be strictly
+    /// increasing within a block. `write` buffers elements and the block is flushed either
+    /// when 8000 elements are buffered or on `finish`/drop; unsorted ids are rejected with an
+    /// error when a block is written.
     ///
     pub fn write(&mut self, element: Element) -> anyhow::Result<()> {
         // Track whether any element is marked invisible so the header can declare the
@@ -162,12 +162,17 @@ impl<W: Write> PbfWriter<W> {
     }
 
     fn write_to_block(&mut self) -> anyhow::Result<()> {
-        if !self.has_writen_header {
+        if !self.has_written_header {
             self.write_header()?;
+        }
+        if self.cache.is_empty() {
+            // Nothing buffered: emit no empty data block (the header alone already forms a
+            // valid file for a writer with no elements).
+            return Ok(());
         }
         let block_builder = PrimitiveBuilder::new();
         let cache = mem::take(&mut self.cache);
-        let block = block_builder.build(cache, self.use_dense);
+        let block = block_builder.build(cache, self.use_dense)?;
 
         let blob = self.build_raw_blob(block.write_to_bytes()?)?;
         self.write_blob(blob, "OSMData")?;
@@ -192,11 +197,24 @@ impl<W: Write> PbfWriter<W> {
 
     /// Finishes writing the PBF file.
     ///
-    /// This method should be called after writing all elements to the PBF file.
+    /// This method should be called after writing all elements to the PBF file. It writes the
+    /// header (even for an empty file) and flushes any buffered elements.
     ///
     pub fn finish(&mut self) -> anyhow::Result<()> {
         self.write_to_block()?;
         self.writer.flush()?;
         Ok(())
+    }
+}
+
+impl<W: Write> Drop for PbfWriter<W> {
+    fn drop(&mut self) {
+        // Best-effort flush of buffered elements so a forgotten `finish()` does not silently
+        // produce an empty file. Errors cannot be returned from `drop`; call `finish()`
+        // explicitly to surface them.
+        if !self.cache.is_empty() {
+            let _ = self.write_to_block();
+        }
+        let _ = self.writer.flush();
     }
 }

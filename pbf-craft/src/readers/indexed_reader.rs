@@ -138,17 +138,57 @@ impl PbfIndex {
         let mut relation_index: BTreeMap<i64, u64> = BTreeMap::new();
 
         let mut reader = PbfReader::from_path(pbf_file_path)?;
+        // The index maps "last element id per blob" -> blob offset and relies on elements
+        // being sorted by id. Track the last seen id of each type across the whole stream and
+        // fail loudly on any violation (within a blob or across blobs) instead of silently
+        // returning wrong lookup results later.
+        let mut last_node_id: Option<i64> = None;
+        let mut last_way_id: Option<i64> = None;
+        let mut last_relation_id: Option<i64> = None;
         while let Some(blob_data) = reader.read_next_blob()? {
-            if !blob_data.nodes.is_empty() {
-                let last = blob_data.nodes.last().unwrap();
+            for node in &blob_data.nodes {
+                if let Some(prev) = last_node_id {
+                    if node.id < prev {
+                        bail!(
+                            "PBF file is not sorted by node id (id {} after {}); the index requires sorted input",
+                            node.id,
+                            prev
+                        );
+                    }
+                }
+                last_node_id = Some(node.id);
+            }
+            for way in &blob_data.ways {
+                if let Some(prev) = last_way_id {
+                    if way.id < prev {
+                        bail!(
+                            "PBF file is not sorted by way id (id {} after {}); the index requires sorted input",
+                            way.id,
+                            prev
+                        );
+                    }
+                }
+                last_way_id = Some(way.id);
+            }
+            for relation in &blob_data.relations {
+                if let Some(prev) = last_relation_id {
+                    if relation.id < prev {
+                        bail!(
+                            "PBF file is not sorted by relation id (id {} after {}); the index requires sorted input",
+                            relation.id,
+                            prev
+                        );
+                    }
+                }
+                last_relation_id = Some(relation.id);
+            }
+            if let Some(last) = blob_data.nodes.last() {
                 node_index.insert(last.id, blob_data.offset);
             }
-            if !blob_data.ways.is_empty() {
-                let last = blob_data.ways.last().unwrap();
+            if let Some(last) = blob_data.ways.last() {
                 way_index.insert(last.id, blob_data.offset);
             }
-            if !blob_data.relations.is_empty() {
-                let last = blob_data.relations.last().unwrap();
+            if let Some(last) = blob_data.relations.last() {
                 relation_index.insert(last.id, blob_data.offset);
             }
         }
@@ -268,9 +308,9 @@ impl IndexedReader<CachedReader> {
     /// # Parameters
     ///
     /// * pbf_file - A path to the PBF file.
-    /// * cache_capacity - The capacity of the cache. The cache stores the parsed Blob from the PBF
-    ///   file. A Blob contains about 8000 elements on average, so choose a capacity that fits your
-    ///   available memory.
+    /// * cache_capacity - The number of decoded blobs to keep in memory (entries, not bytes).
+    ///   A blob holds about 8000 elements on average, so the resident decoded data is roughly
+    ///   `cache_capacity × blob size`; size it against your available memory.
     ///
     pub fn from_path_with_cache(
         pbf_file: &str,
