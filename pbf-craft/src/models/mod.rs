@@ -1,8 +1,30 @@
+//! Element models for OpenStreetMap data.
+//!
+//! The three OSM element types are [`crate::models::Node`], [`crate::models::Way`] and [`crate::models::Relation`], which all share the
+//! common metadata fields of [`crate::models::ElementBase`] (id, version, timestamp, user, changeset id,
+//! visible flag and tags) and are carried polymorphically by the [`crate::models::Element`] enum.
+//!
+//! # Units
+//!
+//! Coordinates are stored as **integer nanodegrees** — the raw unit used by the PBF format
+//! (1e9 nanodegrees = 1 degree). This avoids floating-point precision loss on round-trips.
+//! Divide by `1e9` to obtain degrees. [`crate::models::Bound`] fields use the same unit.
+//!
+//! # The `visible` flag and metadata defaults
+//!
+//! Per the PBF spec the `visible` flag is assumed `true` when absent. All element types
+//! therefore default `visible` to `true`, and `timestamp`/`user` are `Option`s that are
+//! `None` when the source data carries no such metadata. `version`/`changeset_id` default to
+//! `-1` (the convention used by osmosis for "no version"/"no changeset").
 use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// A bounding box from the PBF file header.
+///
+/// Coordinates are in integer **nanodegrees** (1e9 per degree). `origin` is the data source
+/// string recorded in the header.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Bound {
     pub left: i64,
@@ -12,12 +34,16 @@ pub struct Bound {
     pub origin: String,
 }
 
+/// The user associated with an element (a mapper account name and id).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OsmUser {
     pub id: i32,
     pub name: String,
 }
 
+/// A polymorphic OSM element: either a [`Node`], a [`Way`] or a [`Relation`].
+///
+/// Serialized with a `type` tag (`"node"`, `"way"`, `"relation"`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Element {
@@ -27,6 +53,7 @@ pub enum Element {
 }
 
 impl Element {
+    /// Returns the element's `(type, id)` pair.
     pub fn get_meta(&self) -> (ElementType, i64) {
         match self {
             Element::Node(e) => (ElementType::Node, e.id),
@@ -36,6 +63,10 @@ impl Element {
     }
 }
 
+/// The type of an OSM element.
+///
+/// Can be parsed from the lowercase strings `"node"`, `"way"` and `"relation"` via
+/// [`FromStr`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ElementType {
     Node,
@@ -56,6 +87,10 @@ impl FromStr for ElementType {
     }
 }
 
+/// Common metadata shared by [`Node`], [`Way`] and [`Relation`].
+///
+/// See the [module docs](self) for the default values (`visible = true`,
+/// `version = changeset_id = -1`, `timestamp`/`user` = `None`).
 #[derive(Debug)]
 pub struct ElementBase {
     pub id: i64,
@@ -85,6 +120,8 @@ impl Default for ElementBase {
 }
 
 impl ElementBase {
+    /// Creates base metadata for an element with only an id and tags (no version, timestamp
+    /// or user information).
     pub fn new_with_tags(id: i64, tags: Vec<Tag>) -> Self {
         Self {
             id,
@@ -95,12 +132,14 @@ impl ElementBase {
     }
 }
 
+/// A `key=value` pair attached to an element.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Tag {
     pub key: String,
     pub value: String,
 }
 
+/// An OSM node: a point with a coordinate.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Node {
     pub id: i64,
@@ -108,8 +147,11 @@ pub struct Node {
     pub timestamp: Option<DateTime<Utc>>,
     pub user: Option<OsmUser>,
     pub changeset_id: i64,
+    /// Latitude in integer **nanodegrees** (divide by 1e9 for degrees).
     pub latitude: i64,
+    /// Longitude in integer **nanodegrees** (divide by 1e9 for degrees).
     pub longitude: i64,
+    /// `false` marks a deleted/historical object; defaults to `true` (see module docs).
     pub visible: bool,
     pub tags: Vec<Tag>,
 }
@@ -148,6 +190,7 @@ impl From<ElementBase> for Node {
     }
 }
 
+/// An OSM way: an ordered list of node references ([`WayNode`]s).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Way {
     pub id: i64,
@@ -155,8 +198,11 @@ pub struct Way {
     pub timestamp: Option<DateTime<Utc>>,
     pub user: Option<OsmUser>,
     pub changeset_id: i64,
+    /// `false` marks a deleted/historical object; defaults to `true` (see module docs).
     pub visible: bool,
     pub tags: Vec<Tag>,
+    /// The way's nodes in order. Coordinates are present only when the file declares the
+    /// `LocationsOnWays` feature.
     pub way_nodes: Vec<WayNode>,
 }
 
@@ -191,14 +237,20 @@ impl From<ElementBase> for Way {
     }
 }
 
+/// A reference to a node within a [`Way`], optionally carrying the node's coordinates.
+///
+/// Coordinates are in integer **nanodegrees** and are only populated when the PBF file
+/// carries node locations on ways (`LocationsOnWays` optional feature).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct WayNode {
+    /// The referenced node's id.
     pub id: i64,
     pub latitude: Option<i64>,
     pub longitude: Option<i64>,
 }
 
 impl WayNode {
+    /// Creates a node reference without coordinates.
     pub fn new_without_coords(id: i64) -> Self {
         Self {
             id,
@@ -207,6 +259,7 @@ impl WayNode {
         }
     }
 
+    /// Creates a node reference with coordinates (in integer nanodegrees).
     pub fn new(id: i64, latitude: i64, longitude: i64) -> Self {
         Self {
             id,
@@ -216,6 +269,7 @@ impl WayNode {
     }
 }
 
+/// An OSM relation: a set of typed member references ([`RelationMember`]s).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Relation {
     pub id: i64,
@@ -223,6 +277,7 @@ pub struct Relation {
     pub timestamp: Option<DateTime<Utc>>,
     pub user: Option<OsmUser>,
     pub changeset_id: i64,
+    /// `false` marks a deleted/historical object; defaults to `true` (see module docs).
     pub visible: bool,
     pub tags: Vec<Tag>,
     pub members: Vec<RelationMember>,
@@ -259,13 +314,18 @@ impl From<ElementBase> for Relation {
     }
 }
 
+/// A member of a [`Relation`]: a typed reference to another element plus a role.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RelationMember {
+    /// The referenced element's id.
     pub member_id: i64,
+    /// The referenced element's type.
     pub member_type: ElementType,
+    /// The member's role within the relation (e.g. `"outer"`, `"inner"`).
     pub role: String,
 }
 
+/// Common accessors implemented by [`Node`], [`Way`] and [`Relation`].
 pub trait BasicElement: Clone {
     fn get_element_type() -> ElementType;
     fn get_id(&self) -> i64;

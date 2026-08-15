@@ -251,6 +251,19 @@ impl PbfIndex {
 /// It is generic over a type `T` that implements the `PbfRandomRead` trait, which provides the
 /// necessary methods for reading PBF data.
 ///
+/// # Requirements
+///
+/// The index maps "last element id per blob" to a blob offset, so the PBF file **must be
+/// sorted by id within each element type** (the conventional file layout). Unordered files
+/// are rejected with an error when the index is built.
+///
+/// # The `.pif` index file
+///
+/// On first use a `.pif` index file is created next to the PBF file (a header with a magic
+/// byte, the source file's size and mtime, then per-type `(last_id, offset)` entries). The
+/// index is reused while the source file's size and mtime are unchanged; it is written
+/// atomically via a temporary file.
+///
 /// # Type Parameters
 ///
 /// * `T` - A type that implements the `PbfRandomRead` trait and provides random access reading of
@@ -734,41 +747,4 @@ mod tests {
         // Test with invalid PIF file
         assert!(PbfIndex::load_from_file("nonexistent.pif").is_err());
     }
-
-    // #[bench]
-    // fn bench_find_without_cache(b: &mut Bencher) {
-    //     let pbf_file = "./resources/andorra-latest.osm.pbf";
-    //     let mut indexed_reader = IndexedReader::from_path(pbf_file).unwrap();
-
-    //     b.iter(|| {
-    //         for _ in 1..30 {
-    //             let target_op = indexed_reader.find(&ElementType::Node, 4254529698).unwrap();
-    //             target_op.unwrap();
-    //         }
-    //     });
-    // }
-
-    // #[bench]
-    // fn bench_find_with_cache(b: &mut Bencher) {
-    //     let pbf_file = "./resources/andorra-latest.osm.pbf";
-    //     let mut indexed_reader = IndexedReader::from_path_with_cache(pbf_file, 10000).unwrap();
-
-    //     b.iter(|| {
-    //         for _ in 1..30 {
-    //             let target_op = indexed_reader.find(&ElementType::Node, 4254529698).unwrap();
-    //             target_op.unwrap();
-    //         }
-    //     });
-    // }
-
-    // #[bench]
-    // fn bench_batch_operations(b: &mut Bencher) {
-    //     let pbf_file = "./resources/andorra-latest.osm.pbf";
-    //     let mut indexed_reader = IndexedReader::from_path(pbf_file).unwrap();
-    //     let node_ids = vec![4254529698, 4254529699, 4254529700];
-
-    //     b.iter(|| {
-    //         indexed_reader.find_nodes(&node_ids).unwrap();
-    //     });
-    // }
 }

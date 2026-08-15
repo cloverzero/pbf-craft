@@ -20,10 +20,16 @@ const MAX_BLOCK_ITEM_LENGTH: usize = 8000;
 /// It supports writing elements in either dense or non-dense format and can include optional
 /// bounding box information.
 ///
-/// Please note: According to the PBF specification, you should write the elements in the order of
-/// Node, Way, Relation, and for all elements of each type, the IDs should be written in the order
-/// of smallest to largest. PbfWriter writes elements in the order in which `write` is called, so it
-/// is up to the programmer to make sure that elements are written in the proper order.
+/// Elements are buffered and flushed as blocks of 8000; the output blobs are compressed with
+/// zlib. Elements marked `visible = false` cause the header to declare the required
+/// `HistoricalInformation` feature. `finish()` must be called to flush the last partial
+/// block; dropping the writer flushes it best-effort (errors are only surfaced by
+/// `finish()`).
+///
+/// Please note: the PBF format does not require sorted elements, but the conventional layout
+/// (all nodes by id, then all ways by id, then all relations by id) is assumed by
+/// `IndexedReader` and most other tools. `PbfWriter` stores elements in the order in which
+/// `write` is called, so it is up to the caller to provide them in the desired order.
 ///
 /// # Type Parameters
 ///

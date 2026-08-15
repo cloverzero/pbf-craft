@@ -30,3 +30,6 @@ serde_json = "1.0.83"
 [[bin]]
 name = "pbf-craft"
 path = "src/main.rs"
+# Avoid a rustdoc output collision with the pbf-craft library (same target name); the CLI's
+# documentation lives in its README and --help output.
+doc = false

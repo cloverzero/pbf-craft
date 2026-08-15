@@ -1,17 +1,33 @@
 # pbf-craft
 
-A Rust library and command-line tool for reading and writing OpenStreetMap PBF file format.
+A pure-Rust workspace for reading and writing OpenStreetMap **PBF** (Protocolbuffer
+Binary Format) files.
 
-It contains a variety of PBF readers for a variety of scenarios. For example, a PBF
-reader with an index can locate and read elements more efficiently. It also provides
-a PBF writer that can write PBF data to a file.
+## Crates
 
-- Written in pure Rust
-- Provides an indexing feature to the PBF to greatly improve read performance.
+| Crate | Description |
+|---|---|
+| [pbf-craft](pbf-craft/) | Library: OSM element models, streaming and indexed readers, and a PBF writer |
+| [pbf-craft-cli](pbf-craft-cli/) | Command-line utility: `get`, `search`, `export`, `diff`, `boundary` |
 
-## Example
+## Features
 
-Reading a PBF file:
+- **Pure Rust**, no C dependencies.
+- **Multiple readers** for different scenarios: sequential streaming ([`PbfReader`]),
+  iterator-based with progress reporting ([`IterableReader`] + [`ReaderProgress`]), and
+  random access by element id backed by a `.pif` index ([`IndexedReader`]), with an
+  in-memory blob cache and dependency resolution.
+- **Parallel filtering** ([`PbfReader::par_find`]).
+- **Dense and sparse** node encoding; reads `raw`, `zlib`, `lz4` and `zstd` blobs; writes
+  `zlib`-compressed blobs.
+- **Result-based error handling**: malformed or truncated input surfaces as errors, not
+  panics.
+- **CLI**: fetch elements with dependencies, search by id/tag/node-pair, export from
+  Postgres, diff two extracts, and compute an extract's boundary.
+
+## Quick start (library)
+
+Read a PBF file sequentially:
 
 ```rust
 use pbf_craft::readers::PbfReader;
@@ -27,18 +43,17 @@ reader.read(|header, element| {
 }).unwrap();
 ```
 
-Finding an element using the index feature. `IndexedReader` creates an index file for the PBF file, which allows you to quickly locate and retrieve an element when looking for it using its ID. `IndexedReader` has an cache option, with which you can fetch a element with its dependencies more efficiently.
+Find an element by id using the index:
 
 ```rust
 use pbf_craft::models::ElementType;
 use pbf_craft::readers::IndexedReader;
 
-let mut indexed_reader = IndexedReader::from_path_with_cache("resources/andorra-latest.osm.pbf", 1000).unwrap();
-let node = indexed_reader.find(&ElementType::Node, 12345678).unwrap();
-let element_list = indexed_reader.get_with_deps(&ElementType::Way, 1055523837).unwrap();
+let mut indexed_reader = IndexedReader::from_path("resources/andorra-latest.osm.pbf").unwrap();
+let node = indexed_reader.find(&ElementType::Node, 4254529698).unwrap();
 ```
 
-Writing a PBF file:
+Write a PBF file:
 
 ```rust
 use pbf_craft::models::{Element, Node};
@@ -49,11 +64,21 @@ writer.write(Element::Node(Node::default())).unwrap();
 writer.finish().unwrap();
 ```
 
+## Quick start (CLI)
+
+```bash
+cargo run -p pbf-craft-cli -- get --eltype way --elid 1055523837 --file pbf-craft/resources/andorra-latest.osm.pbf
+cargo run -p pbf-craft-cli -- search --tagkey highway --file pbf-craft/resources/andorra-latest.osm.pbf
+cargo run -p pbf-craft-cli -- boundary --file pbf-craft/resources/andorra-latest.osm.pbf
+```
+
+See [pbf-craft-cli](pbf-craft-cli/) for the full command reference.
+
 ## Data format notes
 
-- **Coordinates**: `Node.latitude` / `Node.longitude` are i64 **nanodegrees** (the raw PBF
-  unit; divide by 1e9 for degrees). `Bound` fields are nanodegrees as well.
-- **Sorting**: the PBF format does not require sorted elements, but the conventional file
+- **Coordinates**: `Node`/`WayNode`/`Bound` coordinates are i64 **nanodegrees** (the raw
+  PBF unit; divide by 1e9 for degrees).
+- **Ordering**: the PBF format does not require sorted elements, but the conventional
   layout (all nodes by id, then all ways by id, then all relations by id) is assumed by
   `IndexedReader` and most other tools. `PbfWriter` stores elements in the order written —
   the caller is responsible for the order; `IndexedReader` rejects unordered files with an
@@ -66,3 +91,16 @@ writer.finish().unwrap();
 - **Indexing**: `IndexedReader` builds a `.pif` index validated against the PBF file's size
   and mtime; unsorted files are rejected with an error rather than silently returning wrong
   lookup results.
+
+## Development
+
+```bash
+cargo build --workspace
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check
+```
+
+## License
+
+MIT
