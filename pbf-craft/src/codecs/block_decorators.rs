@@ -268,9 +268,12 @@ impl PrimitiveReader {
             } else {
                 None
             },
-            // The visible flag defaults to true when absent (proto2 get_visible() returns
-            // false for unset optional fields, which would wrongly mark elements deleted).
-            visible: info.has_visible() && info.get_visible(),
+            // Per the PBF spec, an absent visible flag MUST be assumed true. proto2's
+            // get_visible() returns false for an unset optional field, so `has_visible()`
+            // must be consulted: absent -> true, present -> the stored value. (A naive
+            // `has_visible() && get_visible()` wrongly marks every element without the flag
+            // — i.e. all current-data files like osmosis output — as deleted.)
+            visible: !info.has_visible() || info.get_visible(),
         })
     }
 

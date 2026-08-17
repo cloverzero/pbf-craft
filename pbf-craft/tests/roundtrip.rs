@@ -680,3 +680,36 @@ fn cached_reader_inherits_progress_via_deref() {
     let cached = CachedReader::new(reader, 10);
     assert_eq!(cached.progress().total_bytes, Some(expected_len));
 }
+
+#[test]
+fn current_data_reads_back_as_visible() {
+    // Regression: the andorra fixture (osmosis output) never writes the visible flag, so per
+    // the PBF spec every element must be assumed visible=true. A previous expression
+    // (`has_visible() && get_visible()`) inverted the absent-default for sparse elements,
+    // marking every way and relation as deleted.
+    let file = "resources/andorra-latest.osm.pbf";
+    let mut reader = PbfReader::from_path(file).unwrap();
+    let mut total = 0usize;
+    let mut invisible = 0usize;
+    reader
+        .read(|_, el| {
+            if let Some(element) = el {
+                total += 1;
+                let is_visible = match &element {
+                    Element::Node(n) => n.visible,
+                    Element::Way(w) => w.visible,
+                    Element::Relation(r) => r.visible,
+                };
+                if !is_visible {
+                    invisible += 1;
+                }
+            }
+        })
+        .unwrap();
+    assert!(total > 0, "fixture must contain elements");
+    assert_eq!(
+        invisible, 0,
+        "current-data file must contain no invisible elements (checked {} elements)",
+        total
+    );
+}
