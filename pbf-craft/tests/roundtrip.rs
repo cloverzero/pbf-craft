@@ -103,13 +103,57 @@ fn sparse_roundtrip_preserves_visible_false() {
 
 #[test]
 fn roundtrip_preserves_timestamp_none() {
-    // timestamp None must stay None — currently it comes back as Some(1970-01-01).
+    // timestamp None must stay None (never invent the epoch for an absent column).
     let out = write_and_read_nodes("timestamp_none", vec![base_node(1)], true);
     assert_eq!(out.len(), 1);
     assert!(
         out[0].timestamp.is_none(),
         "timestamp None must stay None, got {:?}",
         out[0].timestamp
+    );
+}
+
+#[test]
+fn dense_mixed_timestamps_fall_back_to_sparse() {
+    // Regression: a dense block mixing timestamped and timestamp-less nodes would lose the
+    // timestamps (DenseInfo's timestamp column is all-or-nothing). The writer must fall
+    // back to sparse encoding for such a block so every node keeps its own timestamp
+    // presence.
+    let mut with_ts = base_node(1);
+    let naive =
+        chrono::NaiveDateTime::parse_from_str("2023-05-01 12:30:00", "%Y-%m-%d %H:%M:%S").unwrap();
+    with_ts.timestamp = Some(chrono::DateTime::from_naive_utc_and_offset(
+        naive,
+        chrono::Utc,
+    ));
+    let without_ts = base_node(2);
+
+    let out = write_and_read_nodes(
+        "dense_mixed_timestamp",
+        vec![with_ts.clone(), without_ts],
+        true,
+    );
+    assert_eq!(out.len(), 2);
+    assert!(
+        out[0].timestamp.is_some(),
+        "timestamped node must keep its timestamp, got {:?}",
+        out[0].timestamp
+    );
+    assert!(
+        out[1].timestamp.is_none(),
+        "timestamp-less node must stay None, got {:?}",
+        out[1].timestamp
+    );
+
+    // Control: a uniform dense block with timestamps must also roundtrip them.
+    let mut second_ts = base_node(2);
+    second_ts.timestamp = with_ts.timestamp;
+    let out = write_and_read_nodes("dense_all_timestamp", vec![with_ts, second_ts], true);
+    assert_eq!(out.len(), 2);
+    assert!(
+        out.iter().all(|n| n.timestamp.is_some()),
+        "uniform dense timestamps must roundtrip, got {:?}",
+        out.iter().map(|n| n.timestamp).collect::<Vec<_>>()
     );
 }
 
