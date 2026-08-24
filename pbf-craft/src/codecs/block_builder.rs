@@ -74,8 +74,10 @@ impl PrimitiveBuilder {
         let mut previous_sid = 0;
 
         // The DenseInfo timestamp column is a parallel array: it must cover every node or
-        // none. Emit it only when all nodes carry a timestamp, otherwise omit it entirely so
-        // the read side reports `timestamp: None` instead of inventing the epoch.
+        // none. `build` has already fallen back to sparse encoding for blocks with mixed
+        // timestamp presence, so here presence is uniform: emit the column only when every
+        // node carries a timestamp, otherwise omit it entirely so the read side reports
+        // `timestamp: None` instead of inventing the epoch.
         let write_timestamps = nodes.iter().all(|node| node.timestamp.is_some());
 
         for node in nodes {
@@ -315,12 +317,23 @@ impl PrimitiveBuilder {
         // reserved node terminator, so `add("")` resolves to 0 and the decoder would treat
         // the tag as the end of the node. Fall the whole block back to sparse nodes, where
         // index 0 is a legitimate string-table reference.
+        //
+        // Similarly, DenseInfo's timestamp column is a parallel array covering every node
+        // or none, so a block mixing timestamped and timestamp-less nodes would silently
+        // drop the timestamps of the former. Fall back to sparse encoding, where each
+        // node's Info carries its own timestamp.
+        let has_mixed_timestamps = {
+            let has_timestamp = nodes.iter().any(|node| node.timestamp.is_some());
+            let missing_timestamp = nodes.iter().any(|node| node.timestamp.is_none());
+            has_timestamp && missing_timestamp
+        };
         let use_dense = use_dense
             && !nodes.iter().any(|node| {
                 node.tags
                     .iter()
                     .any(|tag| tag.key.is_empty() || tag.value.is_empty())
-            });
+            })
+            && !has_mixed_timestamps;
         if !nodes.is_empty() {
             self.add_nodes(nodes, use_dense);
         }
@@ -340,6 +353,28 @@ impl PrimitiveBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{DateTime, Utc};
+
+    fn ts() -> DateTime<Utc> {
+        let naive =
+            chrono::NaiveDateTime::parse_from_str("2023-05-01 12:30:00", "%Y-%m-%d %H:%M:%S")
+                .unwrap();
+        DateTime::from_naive_utc_and_offset(naive, Utc)
+    }
+
+    fn node(id: i64) -> Node {
+        Node {
+            id,
+            version: 1,
+            timestamp: None,
+            user: None,
+            changeset_id: 1,
+            latitude: 100 * id,
+            longitude: 200 * id,
+            visible: true,
+            tags: Vec::new(),
+        }
+    }
 
     #[test]
     fn test_build() {
@@ -348,6 +383,56 @@ mod tests {
             "{}, {}",
             builder.block.get_granularity(),
             builder.block.get_date_granularity()
+        );
+    }
+
+    #[test]
+    fn mixed_timestamp_presence_falls_back_to_sparse() {
+        // DenseInfo's timestamp column is all-or-nothing: a block mixing timestamped and
+        // timestamp-less nodes must not be dense, otherwise the former would lose their
+        // timestamps on roundtrip.
+        let mut with_ts = node(1);
+        with_ts.timestamp = Some(ts());
+        let block = PrimitiveBuilder::new()
+            .build(vec![Element::Node(with_ts), Element::Node(node(2))], true);
+        let group = block.get_primitivegroup().first().unwrap();
+        assert!(
+            !group.has_dense(),
+            "mixed timestamp presence must fall back to sparse encoding"
+        );
+        assert_eq!(group.get_nodes().len(), 2);
+    }
+
+    #[test]
+    fn uniform_timestamps_stay_dense() {
+        let mut first = node(1);
+        first.timestamp = Some(ts());
+        let mut second = node(2);
+        second.timestamp = Some(ts());
+        let block =
+            PrimitiveBuilder::new().build(vec![Element::Node(first), Element::Node(second)], true);
+        let group = block.get_primitivegroup().first().unwrap();
+        assert!(group.has_dense(), "uniform timestamps must stay dense");
+        assert_eq!(group.get_dense().get_id().len(), 2);
+        assert_eq!(
+            group.get_dense().get_denseinfo().get_timestamp().len(),
+            2,
+            "the dense timestamp column must cover every node"
+        );
+    }
+
+    #[test]
+    fn uniform_missing_timestamps_stay_dense() {
+        let block = PrimitiveBuilder::new()
+            .build(vec![Element::Node(node(1)), Element::Node(node(2))], true);
+        let group = block.get_primitivegroup().first().unwrap();
+        assert!(
+            group.has_dense(),
+            "uniformly timestamp-less must stay dense"
+        );
+        assert!(
+            group.get_dense().get_denseinfo().get_timestamp().is_empty(),
+            "the dense timestamp column must be omitted when every node lacks one"
         );
     }
 }

@@ -103,13 +103,57 @@ fn sparse_roundtrip_preserves_visible_false() {
 
 #[test]
 fn roundtrip_preserves_timestamp_none() {
-    // timestamp None must stay None — currently it comes back as Some(1970-01-01).
+    // timestamp None must stay None (never invent the epoch for an absent column).
     let out = write_and_read_nodes("timestamp_none", vec![base_node(1)], true);
     assert_eq!(out.len(), 1);
     assert!(
         out[0].timestamp.is_none(),
         "timestamp None must stay None, got {:?}",
         out[0].timestamp
+    );
+}
+
+#[test]
+fn dense_mixed_timestamps_fall_back_to_sparse() {
+    // Regression: a dense block mixing timestamped and timestamp-less nodes would lose the
+    // timestamps (DenseInfo's timestamp column is all-or-nothing). The writer must fall
+    // back to sparse encoding for such a block so every node keeps its own timestamp
+    // presence.
+    let mut with_ts = base_node(1);
+    let naive =
+        chrono::NaiveDateTime::parse_from_str("2023-05-01 12:30:00", "%Y-%m-%d %H:%M:%S").unwrap();
+    with_ts.timestamp = Some(chrono::DateTime::from_naive_utc_and_offset(
+        naive,
+        chrono::Utc,
+    ));
+    let without_ts = base_node(2);
+
+    let out = write_and_read_nodes(
+        "dense_mixed_timestamp",
+        vec![with_ts.clone(), without_ts],
+        true,
+    );
+    assert_eq!(out.len(), 2);
+    assert!(
+        out[0].timestamp.is_some(),
+        "timestamped node must keep its timestamp, got {:?}",
+        out[0].timestamp
+    );
+    assert!(
+        out[1].timestamp.is_none(),
+        "timestamp-less node must stay None, got {:?}",
+        out[1].timestamp
+    );
+
+    // Control: a uniform dense block with timestamps must also roundtrip them.
+    let mut second_ts = base_node(2);
+    second_ts.timestamp = with_ts.timestamp;
+    let out = write_and_read_nodes("dense_all_timestamp", vec![with_ts, second_ts], true);
+    assert_eq!(out.len(), 2);
+    assert!(
+        out.iter().all(|n| n.timestamp.is_some()),
+        "uniform dense timestamps must roundtrip, got {:?}",
+        out.iter().map(|n| n.timestamp).collect::<Vec<_>>()
     );
 }
 
@@ -533,6 +577,67 @@ fn writer_declares_historical_information_for_invisible() {
         read_visible,
         Some(false),
         "visible=false must survive roundtrip"
+    );
+}
+
+#[test]
+fn explicit_historical_declaration_covers_late_invisible_elements() {
+    // Regression: an invisible element arriving after the first automatic flush (8000
+    // elements) previously left the header without HistoricalInformation, because the header
+    // is emitted with the first block and can never be amended. An up-front declaration via
+    // set_historical_data must make the feature present regardless of where invisible
+    // elements appear.
+    let file = TempPbf::new("explicit_historical_late_invisible");
+    let mut writer = PbfWriter::from_path(file.as_ref(), true).unwrap();
+    writer.set_historical_data(true).unwrap();
+    for i in 0..8000 {
+        writer.write(Element::Node(base_node(i + 1))).unwrap();
+    }
+    let mut hidden = base_node(8001);
+    hidden.visible = false;
+    writer.write(Element::Node(hidden)).unwrap();
+    writer.finish().unwrap();
+
+    let mut reader = PbfReader::from_path(file.as_ref()).unwrap();
+    let mut features = Vec::new();
+    let mut invisible_seen = 0;
+    reader
+        .read(|header, element| {
+            if let Some(header_reader) = header {
+                features = header_reader.required_features();
+            }
+            if let Some(Element::Node(n)) = element {
+                if !n.visible {
+                    invisible_seen += 1;
+                }
+            }
+        })
+        .unwrap();
+
+    assert_eq!(invisible_seen, 1, "invisible element must roundtrip");
+    assert!(
+        features.iter().any(|f| f == "HistoricalInformation"),
+        "header must declare HistoricalInformation, got {:?}",
+        features
+    );
+}
+
+#[test]
+fn historical_declaration_rejected_after_header_written() {
+    // The header is emitted with the first flushed block; a declaration made afterwards can
+    // never take effect and must fail loudly instead of silently producing a file that
+    // violates the HistoricalInformation requirement.
+    let file = TempPbf::new("historical_declaration_late");
+    let mut writer = PbfWriter::from_path(file.as_ref(), true).unwrap();
+    for i in 0..8000 {
+        writer.write(Element::Node(base_node(i + 1))).unwrap();
+    }
+    // The 8000th element triggered the first flush, which emitted the header.
+    let err = writer.set_historical_data(true).unwrap_err();
+    assert!(
+        err.to_string().contains("header"),
+        "expected a header-related error, got: {}",
+        err
     );
 }
 
