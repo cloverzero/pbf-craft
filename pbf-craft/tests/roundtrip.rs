@@ -537,6 +537,67 @@ fn writer_declares_historical_information_for_invisible() {
 }
 
 #[test]
+fn explicit_historical_declaration_covers_late_invisible_elements() {
+    // Regression: an invisible element arriving after the first automatic flush (8000
+    // elements) previously left the header without HistoricalInformation, because the header
+    // is emitted with the first block and can never be amended. An up-front declaration via
+    // set_historical_data must make the feature present regardless of where invisible
+    // elements appear.
+    let file = TempPbf::new("explicit_historical_late_invisible");
+    let mut writer = PbfWriter::from_path(file.as_ref(), true).unwrap();
+    writer.set_historical_data(true).unwrap();
+    for i in 0..8000 {
+        writer.write(Element::Node(base_node(i + 1))).unwrap();
+    }
+    let mut hidden = base_node(8001);
+    hidden.visible = false;
+    writer.write(Element::Node(hidden)).unwrap();
+    writer.finish().unwrap();
+
+    let mut reader = PbfReader::from_path(file.as_ref()).unwrap();
+    let mut features = Vec::new();
+    let mut invisible_seen = 0;
+    reader
+        .read(|header, element| {
+            if let Some(header_reader) = header {
+                features = header_reader.required_features();
+            }
+            if let Some(Element::Node(n)) = element {
+                if !n.visible {
+                    invisible_seen += 1;
+                }
+            }
+        })
+        .unwrap();
+
+    assert_eq!(invisible_seen, 1, "invisible element must roundtrip");
+    assert!(
+        features.iter().any(|f| f == "HistoricalInformation"),
+        "header must declare HistoricalInformation, got {:?}",
+        features
+    );
+}
+
+#[test]
+fn historical_declaration_rejected_after_header_written() {
+    // The header is emitted with the first flushed block; a declaration made afterwards can
+    // never take effect and must fail loudly instead of silently producing a file that
+    // violates the HistoricalInformation requirement.
+    let file = TempPbf::new("historical_declaration_late");
+    let mut writer = PbfWriter::from_path(file.as_ref(), true).unwrap();
+    for i in 0..8000 {
+        writer.write(Element::Node(base_node(i + 1))).unwrap();
+    }
+    // The 8000th element triggered the first flush, which emitted the header.
+    let err = writer.set_historical_data(true).unwrap_err();
+    assert!(
+        err.to_string().contains("header"),
+        "expected a header-related error, got: {}",
+        err
+    );
+}
+
+#[test]
 fn roundtrip_user_presence() {
     // N1: a userless element must read back as user=None (not a phantom uid-0 user), and a
     // real user must keep its id/name — in both dense and sparse encodings.

@@ -69,7 +69,10 @@
 //!   produces `zlib`-compressed blobs.
 //! - **visible flag**: elements default to `visible = true` (per spec, the flag is assumed
 //!   true when absent). Elements explicitly marked `visible = false` are written with the
-//!   required `HistoricalInformation` feature declared in the header.
+//!   required `HistoricalInformation` feature declared in the header; the feature is
+//!   auto-detected from elements seen before the first flushed block, so callers streaming
+//!   historical data whose invisible elements may arrive later should declare it up front
+//!   via [`writers::PbfWriter::set_historical_data`].
 //! - **Error handling**: all fallible operations return `anyhow::Result`; malformed or
 //!   truncated input surfaces as errors rather than panics.
 // Generated protobuf code emits `unused_parens` (a rustc lint) that `#![allow(clippy::all)]`

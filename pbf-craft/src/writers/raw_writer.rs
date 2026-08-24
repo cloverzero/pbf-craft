@@ -3,6 +3,7 @@ use std::io::{BufWriter, Write};
 use std::mem;
 use std::path::Path;
 
+use anyhow;
 use byteorder::{self, WriteBytesExt};
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
@@ -21,8 +22,11 @@ const MAX_BLOCK_ITEM_LENGTH: usize = 8000;
 /// bounding box information.
 ///
 /// Elements are buffered and flushed as blocks of 8000; the output blobs are compressed with
-/// zlib. Elements marked `visible = false` cause the header to declare the required
-/// `HistoricalInformation` feature. `finish()` must be called to flush the last partial
+/// zlib. Elements marked `visible = false` that are seen before the header is emitted (the
+/// first automatic flush or `finish()`) cause the header to declare the required
+/// `HistoricalInformation` feature; callers streaming historical data whose invisible
+/// elements may arrive after the first block must declare it up front with
+/// [`PbfWriter::set_historical_data`]. `finish()` must be called to flush the last partial
 /// block; dropping the writer flushes it best-effort (errors are only surfaced by
 /// `finish()`).
 ///
@@ -52,6 +56,7 @@ pub struct PbfWriter<W: Write> {
     cache: Vec<Element>,
     has_written_header: bool,
     has_invisible_elements: bool,
+    declared_historical_data: bool,
 }
 
 impl PbfWriter<BufWriter<File>> {
@@ -86,6 +91,7 @@ impl<W: Write> PbfWriter<W> {
             cache: Vec::new(),
             has_written_header: false,
             has_invisible_elements: false,
+            declared_historical_data: false,
         }
     }
 
@@ -109,6 +115,29 @@ impl<W: Write> PbfWriter<W> {
         self.bbox = Some(bbox);
     }
 
+    /// Declares that the data being written is historical, i.e. contains elements with
+    /// `visible = false`, so the header block declares the required `HistoricalInformation`
+    /// feature.
+    ///
+    /// The writer also auto-detects `visible = false` elements, but only those seen before
+    /// the header is emitted — the header is written together with the first flushed block
+    /// (8000 elements) or at `finish()` and can never be amended afterwards. Callers
+    /// streaming historical data that cannot guarantee an invisible element inside the first
+    /// block must call this before writing, like [`PbfWriter::set_bbox`].
+    ///
+    /// Returns an error if the header has already been written (i.e. the first block was
+    /// already flushed) and the declaration can no longer take effect.
+    pub fn set_historical_data(&mut self, historical: bool) -> anyhow::Result<()> {
+        if self.has_written_header {
+            bail!(
+                "cannot declare historical data after the header has already been written \
+                 (the first block was flushed)"
+            );
+        }
+        self.declared_historical_data = historical;
+        Ok(())
+    }
+
     fn write_header(&mut self) -> anyhow::Result<()> {
         let mut header_block = osmformat::HeaderBlock::new();
         header_block
@@ -120,10 +149,12 @@ impl<W: Write> PbfWriter<W> {
                 .push("DenseNodes".to_string());
         }
         // Per the PBF spec, a writer that emits `visible = false` (historical data) MUST
-        // declare the HistoricalInformation feature. The flag reflects every element seen
-        // before the header is flushed, so write invisible elements before the first block
-        // fills up (8000 elements) or the header cannot be retroactively amended.
-        if self.has_invisible_elements {
+        // declare the HistoricalInformation feature. The flag combines every element seen so
+        // far (auto-detected) with any explicit up-front declaration made via
+        // `set_historical_data`; once the header is flushed it can never be amended, so
+        // callers whose invisible elements may arrive after the first block must declare the
+        // data historical before writing.
+        if self.has_invisible_elements || self.declared_historical_data {
             header_block
                 .required_features
                 .push("HistoricalInformation".to_string());
