@@ -131,7 +131,7 @@ impl SearchCommand {
             "{}",
             serde_json::to_string_pretty(&result)?.to_colored_json_auto()?
         );
-        println!("{} elemets found", result.len());
+        println!("{} elements found", result.len());
         Ok(())
     }
 }
